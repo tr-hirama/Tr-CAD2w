@@ -37,6 +37,7 @@ import {
   type PickedFile,
 } from '../core/file.js';
 import { readDxfBytes } from '../io/dxf.js';
+import { defaultDxfFileName, documentToDxf } from '../io/dxf-write.js';
 import { PrintDialog } from './print-dialog.js';
 import { DEFAULT_PRINT, type PrintSettings } from '../print/paper.js';
 
@@ -160,6 +161,16 @@ export class CadApp {
   save(): void {
     downloadText(defaultFileName(new Date()), serialize(this.doc.toJson()));
     this.setStatus('図面を保存しました');
+  }
+
+  /** DXF（UTF-8 / R2007）で書き出す。 */
+  exportDxf(): void {
+    if (this.doc.count === 0) {
+      this.setStatus('書き出す図形がありません');
+      return;
+    }
+    downloadText(defaultDxfFileName(new Date()), documentToDxf(this.doc.toJson()), 'application/dxf');
+    this.setStatus(`DXF で書き出しました（${this.doc.count} 図形・UTF-8 / R2007）`);
   }
 
   /** 印刷プレビューを開く（PDF は印刷ダイアログの「PDF に保存」で得る）。 */
@@ -566,6 +577,9 @@ export class CadApp {
           break;
         case 'save':
           this.save();
+          break;
+        case 'export-dxf':
+          this.exportDxf();
           break;
         case 'print':
           this.openPrintDialog();

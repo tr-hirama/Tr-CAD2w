@@ -26,6 +26,7 @@
 - **吸着**: 端点 / 中点 / 中心 / 点 / 交点、グリッド吸着
 - **表示**: ホイールズーム（カーソル固定）・中／右ドラッグでパン・全体表示・等倍・背景色切替・グリッド
 - **ファイル**: `.tc2w`（JSON）で保存・読込。**DXF の読込**（`LINE` / `CIRCLE` / `ARC` / `POINT` / `LWPOLYLINE` / `POLYLINE`+`VERTEX` / `TEXT` / `MTEXT`、色 `62`・`420` ／画層 `8` ／線種 `6` ／線幅 `370` ／`$LTSCALE`）。**文字コードは BOM → `$DWGCODEPAGE` → UTF-8 妥当性の順で自動判定**（Shift-JIS の日本語も化けない）
+- **DXF の書出**（UTF-8 / R2007）: 図形・色（`420` で厳密＋`62` 併記）・画層・線種（`LTYPE` 定義つき）・線幅・`$LTSCALE` を出す。矩形は閉じた `LWPOLYLINE`、1行の文字は `TEXT`、複数行は `MTEXT`
 - **ドラッグ＆ドロップ**: 図面ファイルをキャンバスへ落として開く
 - **印刷 / PDF出力**: 用紙（A4〜A0 / B / Letter）・向き・カラー / モノクロ・尺度（ページに合わせる / 1:N）・余白・複数ページ分割・解像度を指定できるプレビュー付き。**1:1 なら図面 100mm が紙の上でも 100mm**。PDF は印刷ダイアログの「PDF に保存」で得る（実行時依存を増やさないため）
 - **用紙空間（レイアウト / ビューポート）**: モデル空間を縮尺・位置・回転で紙に映すデータ構造。**線種尺度はモデル（500）と用紙（5）で別**に持つ（同じだと A4 より長い破線になり実線に見える）。※ UI は未実装
@@ -35,6 +36,7 @@
 | キー / 操作 | 機能 |
 |---|---|
 | `S` `L` `R` `C` `A` `P` `D` `T` | 選択 / 線 / 矩形 / 円 / 円弧 / 連続線 / 点 / 文字 |
+| ツールバーの **DXF書出** | DXF（UTF-8 / R2007）で書き出す |
 | `M` | 移動（基点→先の2クリック） |
 | ホイール | ズーム（カーソル位置固定） |
 | 中 / 右ドラッグ | パン |
@@ -79,6 +81,7 @@ npm run build
 | `src/core/snap.ts` | オブジェクトスナップ・グリッド吸着・交点計算 |
 | `src/core/file.ts` | `.tc2w` の入出力（保存ダイアログ・ファイル選択。**読込は必ずバイト列から入る**） |
 | `src/io/dxf.ts` | DXF 読込（文字コード自動判定・グループコードの解釈・ACI 色・線種名の対応） |
+| `src/io/dxf-write.ts` | DXF 書出（UTF-8 / R2007。**属性の対応は往復で一致するように決めてある**） |
 | `src/core/layout.ts` | 用紙空間（レイアウト・ビューポート）。モデル⇔紙の座標変換 |
 | `src/print/paper.ts` | 用紙・尺度・ページ割付の純ロジック（**canvas とページ数の上限もここ**） |
 | `src/print/print-job.ts` | 用紙解像度での描画と、ブラウザ印刷への受け渡し |
@@ -94,7 +97,7 @@ npm run build
 
 | マイルストーン | issue |
 |---|---|
-| [M1 DXF入出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/1) | ~~[#1 読込](https://github.com/tr-hirama/Tr-CAD2w/issues/1)~~ / [#2 書出（UTF-8）](https://github.com/tr-hirama/Tr-CAD2w/issues/2) / [#3 往復の検証](https://github.com/tr-hirama/Tr-CAD2w/issues/3) / [#4 Shift-JIS 出力の判断](https://github.com/tr-hirama/Tr-CAD2w/issues/4) |
+| [M1 DXF入出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/1) | ~~[#1 読込](https://github.com/tr-hirama/Tr-CAD2w/issues/1)~~ / ~~[#2 書出（UTF-8）](https://github.com/tr-hirama/Tr-CAD2w/issues/2)~~ / [#3 往復の検証](https://github.com/tr-hirama/Tr-CAD2w/issues/3) / [#4 Shift-JIS 出力の判断](https://github.com/tr-hirama/Tr-CAD2w/issues/4) |
 | [M2 編集操作](https://github.com/tr-hirama/Tr-CAD2w/milestone/2) | [#5 トリム・延長・オフセット](https://github.com/tr-hirama/Tr-CAD2w/issues/5) / [#6 フィレット・面取り](https://github.com/tr-hirama/Tr-CAD2w/issues/6) / [#7 回転・拡縮・グループ・クリップボード](https://github.com/tr-hirama/Tr-CAD2w/issues/7) |
 | [M3 測量](https://github.com/tr-hirama/Tr-CAD2w/milestone/3) | [#8 座標入力・CSV](https://github.com/tr-hirama/Tr-CAD2w/issues/8) / [#9 観測ファイル取込](https://github.com/tr-hirama/Tr-CAD2w/issues/9) / [#10 自動結線](https://github.com/tr-hirama/Tr-CAD2w/issues/10) / [#11 トラバース・三斜求積](https://github.com/tr-hirama/Tr-CAD2w/issues/11) |
 | [M4 図面表現と出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/4) | [#12 寸法線](https://github.com/tr-hirama/Tr-CAD2w/issues/12) / [#13 ハッチ・ブロック・画像](https://github.com/tr-hirama/Tr-CAD2w/issues/13) / ~~[#14 印刷・PDF・用紙空間](https://github.com/tr-hirama/Tr-CAD2w/issues/14)~~ / [#15 `.tc2` 相互運用](https://github.com/tr-hirama/Tr-CAD2w/issues/15) / [#16 WebGL 描画](https://github.com/tr-hirama/Tr-CAD2w/issues/16) |
