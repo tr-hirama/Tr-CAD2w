@@ -31,6 +31,42 @@ gh issue list --state open --search "created:>=<前回巡回時刻>" --json numb
 
 指示が無ければ何もしない。**「指示が無いから代わりにこれをやる」は禁止。**
 
+## 0.5. Slack へ通知する（issue #19）
+
+**節目で Slack に流す。** デスクトップ版 TrCad2D と同じ方式（コードではなく運用の取り決め）。
+
+| 送る | 本文の例 |
+|---|---|
+| PR を作った | `[Tr-CAD2w] PR #24 を作りました: 描画を計測できるようにし…` |
+| issue にコメントした | `[Tr-CAD2w] #19 にコメントしました: …` |
+| 判断を仰ぐ（`要確認` を付けた） | `[Tr-CAD2w] #4 の回答待ちです: 納品先の CAD が UTF-8 DXF を…` |
+
+| 送らない | 理由 |
+|---|---|
+| 5 分ごとの巡回で「変化なし」のとき | 毎回送ると通知が埋もれる |
+| テストが落ちた・直したなどの途中経過 | 節目だけでよい |
+
+**本文の頭に必ず `[Tr-CAD2w]` を付ける**（同じチャンネルに TrCad2D の通知も流れるため）。
+
+```powershell
+$url  = (Get-Content C:\Users\setup.TRAVERS\.claude\trcad-slack-webhook.txt -Raw).Trim()
+$body = @{ text = "[Tr-CAD2w] 本文をここに" } | ConvertTo-Json -Compress
+Invoke-RestMethod -Uri $url -Method Post `
+  -ContentType 'application/json; charset=utf-8' `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+```
+
+- 成功すると `ok` が返る
+- **`-Body` はバイト列で渡す。** 文字列のままだと日本語が化ける
+- JSON は `ConvertTo-Json` に組ませる。改行や `"` を含む本文を自前で連結すると壊れる
+- 改行は `` `n ``（PowerShell の改行）を text に入れる
+- **URL 本体をログ・コミット・issue に書かない。** 置き場はリポジトリの外（上のファイル）
+- webhook ファイルが無いときは**通知を諦めて先へ進む**（作業を止めない）。新規発行が要るなら
+  Slack 側の操作と URL の設置は**利用者本人に依頼する**
+
+**この通知はセッションが閉じると止まる**（ループの運用なので）。恒久化するなら GitHub Actions か
+Slack の GitHub 連携を足す（issue #19 の案A / 案B）。
+
 ## 1. 着手前 — issue を選び、ブランチを切り、ベースラインを取る
 
 ```bash
