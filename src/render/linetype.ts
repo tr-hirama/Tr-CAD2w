@@ -54,3 +54,20 @@ export function lineWidthPx(lineWidthMm: number, devicePixelRatio: number): numb
   // mm を「1mm ≒ 2px」の目安で画面幅に換算する（デスクトップ版の見た目に寄せた係数）
   return Math.max(1, lineWidthMm * 2 * Math.max(1, devicePixelRatio)) / Math.max(1, devicePixelRatio);
 }
+
+/**
+ * 極細（線幅 0）を紙に出すときの太さ（mm）。ISO の細線に合わせた値。
+ *
+ * **画面の 1px をそのまま印刷に使ってはいけない。** 300dpi では 1px = 0.085mm で、
+ * アンチエイリアスに溶けて灰色の線になる（黒で出ない）。
+ */
+export const HAIRLINE_MM = 0.18;
+
+/**
+ * 線幅（mm）→ 印刷 px。**紙の上で実寸になる**。
+ * `pxPerMm` は `dpi / 25.4`。
+ */
+export function printLineWidthPx(lineWidthMm: number, pxPerMm: number): number {
+  const mm = lineWidthMm > 0 ? lineWidthMm : HAIRLINE_MM;
+  return Math.max(1, mm * pxPerMm);
+}

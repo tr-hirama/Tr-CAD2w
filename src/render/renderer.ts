@@ -12,7 +12,7 @@ import type { CadDocument } from '../core/document.js';
 import type { Entity, TextEntity } from '../core/entity.js';
 import { TEXT_LINE_GAP, angleToPoint, flatten, rectCorners } from '../core/entity.js';
 import { effectiveColor, effectiveLineStyle, isLightBackground, type ColorContext } from '../core/layer.js';
-import { dashArrayPx, lineWidthPx } from './linetype.js';
+import { dashArrayPx, lineWidthPx, printLineWidthPx } from './linetype.js';
 import type { SnapResult } from '../core/snap.js';
 
 export interface RenderOptions {
@@ -30,6 +30,16 @@ export interface RenderOptions {
   snap?: SnapResult | undefined;
   /** 矩形選択の枠（ワールド）。 */
   selectionBox?: { box: Aabb; crossing: boolean } | undefined;
+  /**
+   * モノクロ描画（印刷用）。すべての図形を黒で描く。
+   * 背景に応じた反転や暗背景の持ち上げより優先する。
+   */
+  monochrome?: boolean | undefined;
+  /**
+   * 線幅を**紙の実寸**で描くときの px/mm（= dpi / 25.4）。印刷のときだけ渡す。
+   * 画面では未指定にして画面固定の太さを使う（デスクトップ版準拠の非対称）。
+   */
+  lineWidthPxPerMm?: number | undefined;
 }
 
 export const DEFAULT_RENDER: RenderOptions = {
@@ -88,13 +98,16 @@ export class Renderer {
 
     const visible = doc.visibleIn(view.visibleWorld());
     for (const e of visible) {
-      this.drawEntity(e, view, doc, colorCtx, doc.selection.has(e.id) ? opts.selectionColor : undefined);
+      const highlight = opts.monochrome ? '#000000' : doc.selection.has(e.id) ? opts.selectionColor : undefined;
+      this.drawEntity(e, view, doc, colorCtx, highlight, false, opts.lineWidthPxPerMm);
     }
 
     if (opts.preview) {
       ctx.save();
       ctx.globalAlpha = 0.8;
-      for (const e of opts.preview) this.drawEntity(e, view, doc, colorCtx, opts.selectionColor, true);
+      for (const e of opts.preview) {
+        this.drawEntity(e, view, doc, colorCtx, opts.selectionColor, true, opts.lineWidthPxPerMm);
+      }
       ctx.restore();
     }
 
@@ -117,12 +130,16 @@ export class Renderer {
     colorCtx: ColorContext,
     highlight?: string,
     dashedPreview = false,
+    lineWidthPxPerMm?: number,
   ): void {
     const ctx = this.ctx;
     const color = highlight ?? effectiveColor(e, colorCtx);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
-    ctx.lineWidth = lineWidthPx(e.lineWidth, this.dpr);
+    ctx.lineWidth =
+      lineWidthPxPerMm === undefined
+        ? lineWidthPx(e.lineWidth, this.dpr)
+        : printLineWidthPx(e.lineWidth, lineWidthPxPerMm);
     ctx.setLineDash(
       dashedPreview ? [4, 4] : dashArrayPx(effectiveLineStyle(e, doc.layers), doc.lineTypeScale, view.scale),
     );

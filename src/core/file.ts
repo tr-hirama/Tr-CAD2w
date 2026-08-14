@@ -31,7 +31,14 @@ export function deserialize(text: string): DocumentJson {
 function isDocumentJson(v: unknown): v is DocumentJson {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Partial<DocumentJson>;
-  return o.format === 'tr-cad2w' && typeof o.version === 'number' && Array.isArray(o.entities);
+  if (o.format !== 'tr-cad2w' || typeof o.version !== 'number') return false;
+  if (!Array.isArray(o.entities) || !Array.isArray(o.layers)) return false;
+  if (o.layouts !== undefined) {
+    if (!Array.isArray(o.layouts)) return false;
+    // レイアウトの中身が配列でないと読込の途中で落ちる。ここで弾く
+    if (!o.layouts.every((l) => Array.isArray(l?.entities) && Array.isArray(l?.viewports))) return false;
+  }
+  return true;
 }
 
 /** ブラウザにファイルとして保存させる。 */
