@@ -12,7 +12,7 @@ import type { DocumentJson } from './document.js';
 export const FILE_EXTENSION = '.tc2w';
 
 /** 「開く」で選べる拡張子。 */
-export const OPEN_ACCEPT = `${FILE_EXTENSION},.json,.dxf`;
+export const OPEN_ACCEPT = `${FILE_EXTENSION},.json,.dxf,.tc2`;
 
 export function serialize(json: DocumentJson): string {
   return JSON.stringify(json);
@@ -36,7 +36,15 @@ function isDocumentJson(v: unknown): v is DocumentJson {
 
 /** ブラウザにファイルとして保存させる。 */
 export function downloadText(filename: string, text: string, mime = 'application/json'): void {
-  const blob = new Blob([text], { type: `${mime};charset=utf-8` });
+  downloadBlob(filename, new Blob([text], { type: `${mime};charset=utf-8` }));
+}
+
+/** バイト列をファイルとして保存させる（`.tc2` のような ZIP に使う）。 */
+export function downloadBytes(filename: string, bytes: Uint8Array, mime = 'application/octet-stream'): void {
+  downloadBlob(filename, new Blob([bytes as BlobPart], { type: mime }));
+}
+
+function downloadBlob(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
