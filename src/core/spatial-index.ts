@@ -20,6 +20,14 @@ export class SpatialIndex {
   private readonly boundsById = new Map<number, Aabb>();
   /** どのセルにも入らない（無限・巨大な）図形。常に候補に混ぜる。 */
   private readonly unbounded: number[] = [];
+  /**
+   * 索引に入っている図形全体の範囲。
+   *
+   * **クエリはこの範囲でクリップする。** 大きく縮小すると「画面に映るワールド
+   * 範囲」が図面よりずっと広くなり、図面の外の空セルまで走査してしまう
+   * （3 万図形・1/10 縮小で 91 万セル＝158ms。issue #16 の計測で判明）。
+   */
+  private extent: Aabb | null = null;
 
   constructor(items: readonly Indexed[] = []) {
     this.rebuild(items);
@@ -29,6 +37,7 @@ export class SpatialIndex {
     this.buckets.clear();
     this.boundsById.clear();
     this.unbounded.length = 0;
+    this.extent = null;
     if (items.length === 0) {
       this.cell = 1;
       return;
@@ -53,6 +62,7 @@ export class SpatialIndex {
       this.unbounded.push(item.id);
       return;
     }
+    this.extent = this.extent === null ? item.bounds : union(this.extent, item.bounds);
     const [x0, y0, x1, y1] = this.cellRange(item.bounds);
     // セルをまたぎ過ぎる図形はバケットを汚すだけなので unbounded 扱いにする
     if ((x1 - x0 + 1) * (y1 - y0 + 1) > 4096) {
@@ -72,8 +82,9 @@ export class SpatialIndex {
   /** 範囲に重なる可能性のある id。厳密判定は呼び出し側で行う。 */
   query(box: Aabb): number[] {
     const out = new Set<number>(this.unbounded);
-    if (isFiniteAabb(box)) {
-      const [x0, y0, x1, y1] = this.cellRange(box);
+    const clipped = this.clipToExtent(box);
+    if (clipped) {
+      const [x0, y0, x1, y1] = this.cellRange(clipped);
       for (let cx = x0; cx <= x1; cx++) {
         for (let cy = y0; cy <= y1; cy++) {
           const b = this.buckets.get(`${cx},${cy}`);
@@ -88,6 +99,28 @@ export class SpatialIndex {
     return [...out];
   }
 
+  /**
+   * クエリ範囲を索引が持つ範囲へ狭める。重なりが無ければ null。
+   *
+   * **これが無いと、縮小したときに図面の外の空セルを延々と走査する。**
+   */
+  private clipToExtent(box: Aabb): Aabb | null {
+    if (!isFiniteAabb(box) || this.extent === null) return null;
+    const e = this.extent;
+    if (!aabbIntersects(e, box)) return null;
+    return {
+      minX: Math.max(box.minX, e.minX),
+      minY: Math.max(box.minY, e.minY),
+      maxX: Math.min(box.maxX, e.maxX),
+      maxY: Math.min(box.maxY, e.maxY),
+    };
+  }
+
+  /** 索引に入っている図形全体の範囲（空なら null）。 */
+  get indexedExtent(): Aabb | null {
+    return this.extent;
+  }
+
   get cellSize(): number {
     return this.cell;
   }
@@ -100,6 +133,15 @@ export class SpatialIndex {
       Math.floor(b.maxY / this.cell),
     ];
   }
+}
+
+function union(a: Aabb, b: Aabb): Aabb {
+  return {
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+  };
 }
 
 function isFiniteAabb(b: Aabb): boolean {
