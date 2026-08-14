@@ -11,6 +11,9 @@ import type { DocumentJson } from './document.js';
 
 export const FILE_EXTENSION = '.tc2w';
 
+/** 「開く」で選べる拡張子。 */
+export const OPEN_ACCEPT = `${FILE_EXTENSION},.json,.dxf`;
+
 export function serialize(json: DocumentJson): string {
   return JSON.stringify(json);
 }
@@ -43,8 +46,17 @@ export function downloadText(filename: string, text: string, mime = 'application
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** ファイル選択ダイアログを開いてテキストを読む。キャンセルなら null。 */
-export function pickTextFile(accept = `${FILE_EXTENSION},.json`): Promise<{ name: string; text: string } | null> {
+export interface PickedFile {
+  name: string;
+  /**
+   * 生のバイト列。**テキストとして解釈する前に必ずここを通す。**
+   * DXF は Shift-JIS のことがあり、`File.text()`（UTF-8 固定）では化ける
+   */
+  bytes: Uint8Array;
+}
+
+/** ファイル選択ダイアログを開いてバイト列を読む。キャンセルなら null。 */
+export function pickFile(accept = OPEN_ACCEPT): Promise<PickedFile | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -55,12 +67,24 @@ export function pickTextFile(accept = `${FILE_EXTENSION},.json`): Promise<{ name
         resolve(null);
         return;
       }
-      void file.text().then((text) => resolve({ name: file.name, text }));
+      void readFile(file).then(resolve);
     });
     // キャンセルは change が来ないので cancel を見る（対応ブラウザのみ）
     input.addEventListener('cancel', () => resolve(null));
     input.click();
   });
+}
+
+/** `File`（ドラッグ＆ドロップ含む）をバイト列として読む。 */
+export async function readFile(file: File): Promise<PickedFile> {
+  return { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+}
+
+/** BOM を落として UTF-8 として解釈する（`.tc2w` / JSON 用）。 */
+export function decodeUtf8(bytes: Uint8Array): string {
+  const body =
+    bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes;
+  return new TextDecoder('utf-8').decode(body);
 }
 
 /** 既定の保存名。`図面-20260814-1530.tc2w` の形。 */

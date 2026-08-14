@@ -26,7 +26,17 @@ import {
 } from '../core/entity.js';
 import { DEFAULT_DRAW_ATTRS, DrawTool, TOOL_KEYS, TOOL_LABEL, promptFor, type DrawAttrs, type ToolName } from './tools.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
-import { defaultFileName, deserialize, downloadText, pickTextFile, serialize } from '../core/file.js';
+import {
+  decodeUtf8,
+  defaultFileName,
+  deserialize,
+  downloadText,
+  pickFile,
+  readFile,
+  serialize,
+  type PickedFile,
+} from '../core/file.js';
+import { readDxfBytes } from '../io/dxf.js';
 
 interface Pointer {
   /** 押した画面座標。 */
@@ -69,6 +79,7 @@ export class CadApp {
     this.bindPointer();
     this.bindKeyboard();
     this.bindToolbar();
+    this.bindDragAndDrop();
     this.buildLayerList();
 
     const ro = new ResizeObserver(() => this.handleResize());
@@ -146,15 +157,39 @@ export class CadApp {
   }
 
   async open(): Promise<void> {
-    const picked = await pickTextFile();
-    if (!picked) return;
+    const picked = await pickFile();
+    if (picked) this.loadPicked(picked);
+  }
+
+  /**
+   * ファイルを図面として読む。`.dxf` は DXF、それ以外は `.tc2w`（JSON）。
+   *
+   * **読めなかったときは初期化せず、いま開いている図面をそのまま残す**
+   * （デスクトップ版と同じ扱い）。`loadJson` の中で `clear()` する作りなので、
+   * 解釈は必ず `loadJson` を呼ぶ前に済ませる。
+   */
+  private loadPicked(picked: PickedFile): void {
     try {
-      this.doc.loadJson(deserialize(picked.text));
+      if (/\.dxf$/i.test(picked.name)) {
+        const res = readDxfBytes(picked.bytes);
+        if (res.json.entities.length === 0) {
+          throw new Error('読める図形がありませんでした（ENTITIES が空か、未対応の形式です）');
+        }
+        this.doc.loadJson(res.json);
+        const skipped = Object.entries(res.skipped);
+        const skipText =
+          skipped.length > 0 ? `／未対応 ${skipped.map(([k, v]) => `${k}×${v}`).join(' ')}` : '';
+        this.setStatus(
+          `${picked.name} を開きました（${this.doc.count} 図形・${res.encoding}${skipText}）`,
+        );
+      } else {
+        this.doc.loadJson(deserialize(decodeUtf8(picked.bytes)));
+        this.setStatus(`${picked.name} を開きました（${this.doc.count} 図形）`);
+      }
       this.buildLayerList();
       this.zoomFit();
-      this.setStatus(`${picked.name} を開きました`);
     } catch (err) {
-      this.setStatus(`開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
+      this.setStatus(`${picked.name} を開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
     this.markDirty();
   }
@@ -261,6 +296,21 @@ export class CadApp {
       },
       { passive: false },
     );
+  }
+
+  /** 図面ファイルをキャンバスへドラッグ＆ドロップで開けるようにする。 */
+  private bindDragAndDrop(): void {
+    const host = this.canvas.parentElement ?? this.canvas;
+    host.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+    });
+    host.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      const file = ev.dataTransfer?.files?.[0];
+      if (!file) return;
+      void readFile(file).then((picked) => this.loadPicked(picked));
+    });
   }
 
   private bindKeyboard(): void {
