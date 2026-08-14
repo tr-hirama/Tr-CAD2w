@@ -30,6 +30,7 @@ import {
   decodeUtf8,
   defaultFileName,
   deserialize,
+  downloadBytes,
   downloadText,
   pickFile,
   readFile,
@@ -38,6 +39,8 @@ import {
 } from '../core/file.js';
 import { readDxfBytes } from '../io/dxf.js';
 import { defaultDxfFileName, documentToDxf } from '../io/dxf-write.js';
+import { defaultTc2FileName, readTc2, writeTc2 } from '../io/tc2.js';
+import { looksLikeZip } from '../io/zip.js';
 import { PrintDialog } from './print-dialog.js';
 import { DEFAULT_PRINT, type PrintSettings } from '../print/paper.js';
 
@@ -205,6 +208,11 @@ export class CadApp {
    * 解釈は必ず `loadJson` を呼ぶ前に済ませる。
    */
   private loadPicked(picked: PickedFile): void {
+    // .tc2（ZIP）は伸長が非同期なので別経路。**判定は拡張子ではなく中身の先頭 2 バイト**
+    if (looksLikeZip(picked.bytes)) {
+      void this.loadTc2(picked);
+      return;
+    }
     try {
       if (/\.dxf$/i.test(picked.name)) {
         const res = readDxfBytes(picked.bytes);
@@ -228,6 +236,43 @@ export class CadApp {
       this.setStatus(`${picked.name} を開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
     this.markDirty();
+  }
+
+  /** デスクトップ版の `.tc2`（JSON を ZIP 圧縮）を読む。 */
+  private async loadTc2(picked: PickedFile): Promise<void> {
+    try {
+      const res = await readTc2(picked.bytes);
+      if (res.json.entities.length === 0) throw new Error('読める図形がありませんでした');
+      this.doc.loadJson(res.json);
+
+      const skipped = Object.entries(res.skipped);
+      const notes: string[] = [];
+      if (skipped.length > 0) notes.push(`未対応 ${skipped.map(([k, v]) => `${k}×${v}`).join(' ')}`);
+      if (res.droppedSections.length > 0) notes.push(`取り込まず: ${res.droppedSections.join('・')}`);
+      this.setStatus(
+        `${picked.name} を開きました（${this.doc.count} 図形${notes.length > 0 ? '／' + notes.join('／') : ''}）`,
+      );
+      this.buildLayerList();
+      this.zoomFit();
+    } catch (err) {
+      this.setStatus(`${picked.name} を開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.markDirty();
+  }
+
+  /** デスクトップ版の `.tc2` で書き出す。 */
+  async exportTc2(): Promise<void> {
+    if (this.doc.count === 0) {
+      this.setStatus('書き出す図形がありません');
+      return;
+    }
+    try {
+      const bytes = await writeTc2(this.doc.toJson());
+      downloadBytes(defaultTc2FileName(new Date()), bytes, 'application/zip');
+      this.setStatus(`.tc2 で書き出しました（${this.doc.count} 図形・${bytes.length} バイト）`);
+    } catch (err) {
+      this.setStatus(`.tc2 を書き出せませんでした: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   newDocument(): void {
@@ -580,6 +625,9 @@ export class CadApp {
           break;
         case 'export-dxf':
           this.exportDxf();
+          break;
+        case 'export-tc2':
+          void this.exportTc2();
           break;
         case 'print':
           this.openPrintDialog();
