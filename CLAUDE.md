@@ -79,7 +79,7 @@ npm run build    # tsc --noEmit → vite build
 | マージ先 | `main`（merge commit。squash / rebase にしない） |
 | マージ条件 | **自動マージしない。PR の承認が付いてからマージする**（利用者が直接マージしても可） |
 
-改修1件＝コミット1本＝PR1本。
+**改修1件＝issue1本＝ブランチ1本＝コミット1本＝PR1本。** 手順は `.claude/skills/trcad2w-cycle/SKILL.md`（`/trcad2w-cycle`）。着手順は milestone（M1 DXF入出力 → M2 編集操作 → M3 測量 → M4 図面表現と出力）。
 
 コミットメッセージは日本語。1行目は利用者の言葉で「何が変わるか」。本文は `■ 症状` / `■ 原因` / `■ 修正` / `■ テスト` の見出しで書き、末尾に `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`。
 

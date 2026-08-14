@@ -81,14 +81,16 @@ npm run build
 
 ## これから
 
-デスクトップ版にあってまだ無いもの（着手順は未定）:
+デスクトップ版にあってまだ無いものを [issue](https://github.com/tr-hirama/Tr-CAD2w/issues) に起こしてあります。着手は **M1 → M4** の順（`M1 DXF入出力` から）。
 
-- DXF / DWG 入出力、レガシー `.trc` 読込
-- 測量機能（座標入力・観測ファイル取込・自動結線・トラバース計算・三斜求積・まわりけん）
-- 寸法線・ハッチング・ブロック挿入・画像挿入
-- トリム / 延長 / オフセット / フィレット / 面取り
-- 印刷・PDF 出力・用紙空間（レイアウト / ビューポート）
-- WebGL 描画への差し替え
+| マイルストーン | issue |
+|---|---|
+| [M1 DXF入出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/1) | [#1 読込](https://github.com/tr-hirama/Tr-CAD2w/issues/1) / [#2 書出（UTF-8）](https://github.com/tr-hirama/Tr-CAD2w/issues/2) / [#3 往復の検証](https://github.com/tr-hirama/Tr-CAD2w/issues/3) / [#4 Shift-JIS 出力の判断](https://github.com/tr-hirama/Tr-CAD2w/issues/4) |
+| [M2 編集操作](https://github.com/tr-hirama/Tr-CAD2w/milestone/2) | [#5 トリム・延長・オフセット](https://github.com/tr-hirama/Tr-CAD2w/issues/5) / [#6 フィレット・面取り](https://github.com/tr-hirama/Tr-CAD2w/issues/6) / [#7 回転・拡縮・グループ・クリップボード](https://github.com/tr-hirama/Tr-CAD2w/issues/7) |
+| [M3 測量](https://github.com/tr-hirama/Tr-CAD2w/milestone/3) | [#8 座標入力・CSV](https://github.com/tr-hirama/Tr-CAD2w/issues/8) / [#9 観測ファイル取込](https://github.com/tr-hirama/Tr-CAD2w/issues/9) / [#10 自動結線](https://github.com/tr-hirama/Tr-CAD2w/issues/10) / [#11 トラバース・三斜求積](https://github.com/tr-hirama/Tr-CAD2w/issues/11) |
+| [M4 図面表現と出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/4) | [#12 寸法線](https://github.com/tr-hirama/Tr-CAD2w/issues/12) / [#13 ハッチ・ブロック・画像](https://github.com/tr-hirama/Tr-CAD2w/issues/13) / [#14 印刷・PDF・用紙空間](https://github.com/tr-hirama/Tr-CAD2w/issues/14) / [#15 `.tc2` 相互運用](https://github.com/tr-hirama/Tr-CAD2w/issues/15) / [#16 WebGL 描画](https://github.com/tr-hirama/Tr-CAD2w/issues/16) |
+
+改修は **issue1本＝ブランチ1本＝コミット1本＝PR1本**で進めます。手順は [.claude/skills/trcad2w-cycle/SKILL.md](.claude/skills/trcad2w-cycle/SKILL.md)。
 
 ## ライセンス
 
