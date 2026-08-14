@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tr-CAD2w</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="toolbar">
+        <div class="group">
+          <button type="button" data-cmd="new" title="新規">新規</button>
+          <button type="button" data-cmd="open" title="開く (Ctrl+O)">開く</button>
+          <button type="button" data-cmd="save" title="保存 (Ctrl+S)">保存</button>
+        </div>
+        <div class="group">
+          <button type="button" data-tool="select" title="選択 (S)">選択</button>
+          <button type="button" data-tool="line" title="線 (L)">線</button>
+          <button type="button" data-tool="rect" title="矩形 (R)">矩形</button>
+          <button type="button" data-tool="circle" title="円 (C)">円</button>
+          <button type="button" data-tool="arc" title="円弧 (A)">円弧</button>
+          <button type="button" data-tool="polyline" title="連続線 (P)">連続線</button>
+          <button type="button" data-tool="point" title="点 (D)">点</button>
+          <button type="button" data-tool="text" title="文字 (T)">文字</button>
+        </div>
+        <div class="group">
+          <button type="button" data-tool="move" title="移動 (M)">移動</button>
+          <button type="button" data-tool="copy" title="複写">複写</button>
+          <button type="button" data-cmd="delete" title="削除 (Del)">削除</button>
+          <button type="button" data-cmd="undo" title="元に戻す (Ctrl+Z)">元に戻す</button>
+          <button type="button" data-cmd="redo" title="やり直し (Ctrl+Shift+Z)">やり直し</button>
+        </div>
+        <div class="group">
+          <button type="button" data-cmd="zoom-out" title="ズームアウト (-)">−</button>
+          <button type="button" data-cmd="zoom-in" title="ズームイン (+)">＋</button>
+          <button type="button" data-cmd="zoom-actual" title="等倍 (1:1)">等倍</button>
+          <button type="button" data-cmd="zoom-fit" title="全体表示 (Home)">全体</button>
+        </div>
+        <div class="group">
+          <button type="button" data-cmd="osnap" title="オブジェクト吸着 (F3)">Obj吸着</button>
+          <button type="button" data-cmd="gsnap" title="グリッド吸着 (G)">Grid吸着</button>
+          <button type="button" data-cmd="bg" title="背景色を切替">背景</button>
+        </div>
+      </header>
+
+      <main id="canvas-host">
+        <canvas id="canvas"></canvas>
+      </main>
+
+      <aside id="sidebar">
+        <h2>画層</h2>
+        <div id="layer-list"></div>
+        <h2>操作</h2>
+        <ul class="help">
+          <li>ホイール = ズーム（カーソル固定）</li>
+          <li>中／右ドラッグ = 画面移動</li>
+          <li>選択ツールで左ドラッグ = 矩形選択<br />（右→左は交差選択）</li>
+          <li>右クリック／Enter = 連続線の確定</li>
+          <li>Esc = 取消 / Del = 削除</li>
+          <li>Ctrl+Z / Ctrl+Shift+Z = 元に戻す / やり直し</li>
+        </ul>
+      </aside>
+
+      <footer id="statusbar">
+        <span id="status">起動しました</span>
+        <span id="info"></span>
+      </footer>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
