@@ -108,24 +108,26 @@ export function tokenize(text: string): DxfPair[] {
  * 近似**で、AutoCAD の実測値と数値までは一致しない。トゥルーカラー(`420`)がある
  * ファイルではそちらを優先するのでこの近似は効かない。
  */
+export const ACI_EXACT: Readonly<Record<number, string>> = {
+  1: '#ff0000',
+  2: '#ffff00',
+  3: '#00ff00',
+  4: '#00ffff',
+  5: '#0000ff',
+  6: '#ff00ff',
+  7: VB_BLACK, // 色 7 は「白/黒」。背景に応じて反転させるので白で持つ
+  8: '#808080',
+  9: '#c0c0c0',
+  250: '#333333',
+  251: '#505050',
+  252: '#696969',
+  253: '#828282',
+  254: '#bebebe',
+  255: '#ffffff',
+};
+
 export function aciToColor(aci: number): string {
-  const exact: Record<number, string> = {
-    1: '#ff0000',
-    2: '#ffff00',
-    3: '#00ff00',
-    4: '#00ffff',
-    5: '#0000ff',
-    6: '#ff00ff',
-    7: VB_BLACK, // 色 7 は「白/黒」。背景に応じて反転させるので白で持つ
-    8: '#808080',
-    9: '#c0c0c0',
-    250: '#333333',
-    251: '#505050',
-    252: '#696969',
-    253: '#828282',
-    254: '#bebebe',
-    255: '#ffffff',
-  };
+  const exact = ACI_EXACT;
   const hit = exact[aci];
   if (hit) return hit;
   if (aci < 10 || aci > 249) return VB_BLACK;
@@ -557,17 +559,52 @@ export function unescapeDxfText(s: string): string {
   return s.replace(/%%d/gi, '°').replace(/%%p/gi, '±').replace(/%%c/gi, 'Ø').replace(/%%%/g, '%');
 }
 
-/** `MTEXT` の書式コードを落として素の文字へ（改行 `\P` は保つ）。 */
+/**
+ * `MTEXT` の本文を素の文字へ。
+ *
+ * **1 文字ずつ走査する。** 正規表現の順次置換だと `\\P`（エスケープされた
+ * バックスラッシュ + P）が改行に化けるなど、エスケープの入れ子を取り違える。
+ * 書出の `escapeMText` と対になっていること。
+ */
 export function unescapeMText(s: string): string {
-  return unescapeDxfText(
-    s
-      .replace(/\\P/g, '\n')
-      .replace(/\\~/g, ' ')
-      // \f... \F... \H1.5x; などの書式指定は ; まで捨てる
-      .replace(/\\[fFHWQATCcpS][^;\\]*;?/g, '')
-      .replace(/[{}]/g, '')
-      .replace(/\\\\/g, '\\'),
-  );
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (c === '{' || c === '}') continue; // グループ化の記号（素の波括弧は \{ で来る）
+    if (c !== '\\') {
+      out += c;
+      continue;
+    }
+    const next = s[i + 1];
+    if (next === undefined) break;
+    switch (next) {
+      case 'P':
+        out += '\n';
+        i++;
+        break;
+      case '~':
+        out += ' ';
+        i++;
+        break;
+      case '\\':
+      case '{':
+      case '}':
+        out += next;
+        i++;
+        break;
+      default:
+        if ('fFHWQATCcpS'.includes(next)) {
+          // \H1.5x; \fMSゴシック|b0; などの書式指定は ; まで捨てる
+          const end = s.indexOf(';', i + 1);
+          i = end < 0 ? s.length : end;
+        } else {
+          out += next; // 知らないエスケープは中身をそのまま出す
+          i++;
+        }
+        break;
+    }
+  }
+  return unescapeDxfText(out);
 }
 
 /** バイト列から直接読む（文字コード判定つき）。 */
