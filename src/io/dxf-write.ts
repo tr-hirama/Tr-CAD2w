@@ -1,5 +1,5 @@
 /**
- * DXF 書出（UTF-8 / R2007 = AC1021）。
+ * DXF 書出（既定は UTF-8 / R2007 = AC1021。Shift-JIS も選べる）。
  *
  * 読込は `dxf.ts`。**属性の対応は往復で一致するように決めている**:
  *
@@ -20,8 +20,9 @@
  * **落ちる情報**: 複数行文字の `vAlign: 'baseline'`。MTEXT のアタッチメントに
  * ベースラインが無いため `top` として出る（1 行の文字は TEXT なので保たれる）。
  *
- * Shift-JIS（ANSI_932）出力は #4 で判断するまで持たない。ブラウザの `TextEncoder`
- * は UTF-8 固定なので、素朴には書けない。
+ * **文字コードは選べる**（issue #4）。既定は UTF-8 / R2007。`shift_jis` を渡すと
+ * R2000（AC1015）＋ `$DWGCODEPAGE=ANSI_932` で出す（旧 AutoCAD / ZWCAD 向け）。
+ * ブラウザの `TextEncoder` は UTF-8 固定なので、変換は `shift-jis.ts` が持つ。
  */
 
 import type { DocumentJson } from '../core/document.js';
@@ -35,6 +36,7 @@ import type { Layer } from '../core/layer.js';
 import { parseColor, type Rgb } from '../core/layer.js';
 import { EMPTY_AABB, aabbUnion, deg } from '../core/geometry.js';
 import { patternInMm } from '../render/linetype.js';
+import { encodeShiftJis, unmappableChars } from './shift-jis.js';
 import { ACI_EXACT, aciToColor } from './dxf.js';
 
 /** 線種名（DXF 側）。読込の `lineStyleOfName` が拾える名前にする。 */
@@ -248,8 +250,23 @@ interface Handles {
   paperBlockRecord0: string;
 }
 
-/** 図面を DXF テキスト（UTF-8 / R2007）へ。 */
-export function documentToDxf(json: DocumentJson): string {
+/**
+ * DXF の文字コード。
+ *
+ * - `utf-8`: R2007（AC1021）。UTF-8 が使えるのはこの版から
+ * - `shift_jis`: R2000（AC1015）＋ `$DWGCODEPAGE=ANSI_932`。**旧 AutoCAD / ZWCAD 向け**。
+ *   R2007 は UTF-8 前提なので、Shift-JIS で出すときは版も落とす（issue #4）
+ */
+export type DxfEncoding = 'utf-8' | 'shift_jis';
+
+export interface DxfWriteOptions {
+  /** 既定は `utf-8`。 */
+  encoding?: DxfEncoding;
+}
+
+/** 図面を DXF テキストへ。既定は UTF-8 / R2007。 */
+export function documentToDxf(json: DocumentJson, options: DxfWriteOptions = {}): string {
+  const encoding = options.encoding ?? 'utf-8';
   const body = new DxfWriter();
   const h: Handles = {
     rootDict: body.handle(),
@@ -273,9 +290,35 @@ export function documentToDxf(json: DocumentJson): string {
 
   // $HANDSEED はハンドルを使い切ってからでないと決まらないので HEADER は最後に組む
   const head = new DxfWriter();
-  writeHeader(head, json, body.handleSeed);
+  writeHeader(head, json, body.handleSeed, encoding);
 
   return head.text() + body.text() + ['0', 'EOF', ''].join('\n');
+}
+
+export interface DxfBytesResult {
+  bytes: Uint8Array;
+  encoding: DxfEncoding;
+  /** Shift-JIS に無くて `?` へ落とした文字の数（UTF-8 なら常に 0）。 */
+  unmapped: number;
+  /** 落とした文字（重複なし・報告用）。 */
+  unmappedChars: string[];
+}
+
+/**
+ * 図面を DXF の**バイト列**へ。文字コードを選べるのはこちら。
+ *
+ * `TextEncoder` は UTF-8 固定なので、Shift-JIS は `shift-jis.ts` の変換を通す。
+ * **書けない文字は `?` に落として先へ進み**、その数を返す（1 文字のために
+ * 書き出しごと失敗させない）。
+ */
+export function documentToDxfBytes(json: DocumentJson, options: DxfWriteOptions = {}): DxfBytesResult {
+  const encoding = options.encoding ?? 'utf-8';
+  const text = documentToDxf(json, { encoding });
+  if (encoding === 'utf-8') {
+    return { bytes: new TextEncoder().encode(text), encoding, unmapped: 0, unmappedChars: [] };
+  }
+  const { bytes, unmapped } = encodeShiftJis(text);
+  return { bytes, encoding, unmapped, unmappedChars: unmapped > 0 ? unmappableChars(text) : [] };
 }
 
 /** 挿入をブロック定義から展開して並べる（定義が無い挿入は落ちる）。 */
@@ -291,14 +334,20 @@ function flattenInserts(json: DocumentJson): Entity[] {
   return out;
 }
 
-function writeHeader(w: DxfWriter, json: DocumentJson, handleSeed: string): void {
+function writeHeader(w: DxfWriter, json: DocumentJson, handleSeed: string, encoding: DxfEncoding): void {
   const box = flattenInserts(json).reduce((acc, e) => aabbUnion(acc, entityBounds(e)), EMPTY_AABB);
   const hasExtents = box.minX <= box.maxX;
 
   w.pair(0, 'SECTION');
   w.pair(2, 'HEADER');
   w.pair(9, '$ACADVER');
-  w.pair(1, 'AC1021'); // R2007。UTF-8 が使えるのはこの版から
+  // R2007(AC1021) は UTF-8 前提。Shift-JIS で出すときは R2000(AC1015) まで落とす
+  w.pair(1, encoding === 'shift_jis' ? 'AC1015' : 'AC1021');
+  if (encoding === 'shift_jis') {
+    // 旧 AutoCAD / ZWCAD はこれを見て Shift-JIS として読む
+    w.pair(9, '$DWGCODEPAGE');
+    w.pair(3, 'ANSI_932');
+  }
   w.pair(9, '$HANDSEED');
   w.pair(5, handleSeed);
   w.pair(9, '$INSUNITS');

@@ -86,7 +86,7 @@ import {
   type PickedFile,
 } from '../core/file.js';
 import { readDxfBytes } from '../io/dxf.js';
-import { defaultDxfFileName, documentToDxf } from '../io/dxf-write.js';
+import { defaultDxfFileName, documentToDxf, documentToDxfBytes } from '../io/dxf-write.js';
 import { defaultTc2FileName, readTc2, writeTc2 } from '../io/tc2.js';
 import { looksLikeZip } from '../io/zip.js';
 import { PrintDialog } from './print-dialog.js';
@@ -262,6 +262,26 @@ export class CadApp {
     }
     downloadText(defaultDxfFileName(new Date()), documentToDxf(this.doc.toJson()), 'application/dxf');
     this.setStatus(`DXF で書き出しました（${this.doc.count} 図形・UTF-8 / R2007）`);
+  }
+
+  /**
+   * Shift-JIS（`ANSI_932`）で DXF を書き出す。**旧 AutoCAD / ZWCAD 向け**（issue #4）。
+   *
+   * R2007 は UTF-8 前提なので、こちらは R2000（AC1015）で出す。Shift-JIS に無い
+   * 文字は `?` へ落ちるので、**落ちたときは何が落ちたかを画面に出す**。
+   */
+  exportDxfSjis(): void {
+    if (this.doc.count === 0) {
+      this.setStatus('書き出す図形がありません');
+      return;
+    }
+    const r = documentToDxfBytes(this.doc.toJson(), { encoding: 'shift_jis' });
+    downloadBytes(defaultDxfFileName(new Date()), r.bytes, 'application/dxf');
+    const lost =
+      r.unmapped === 0
+        ? ''
+        : `／${r.unmapped} 文字が Shift-JIS に無く ? になりました: ${r.unmappedChars.slice(0, 8).join('')}`;
+    this.setStatus(`DXF で書き出しました（${this.doc.count} 図形・Shift-JIS / R2000）${lost}`);
   }
 
   /** 印刷プレビューを開く（PDF は印刷ダイアログの「PDF に保存」で得る）。 */
@@ -1373,6 +1393,9 @@ export class CadApp {
           break;
         case 'export-dxf':
           this.exportDxf();
+          break;
+        case 'export-dxf-sjis':
+          this.exportDxfSjis();
           break;
         case 'export-tc2':
           void this.exportTc2();
