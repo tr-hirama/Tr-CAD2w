@@ -22,7 +22,7 @@
  * | `LtScale` | `lineTypeScale` | 無ければ 500 |
  * | `PointMode` / `PointSize` | `pointStyle`（`PDMODE` / `PDSIZE` 相当） | 無ければ `＋`・画面固定 |
  * | `Project` / `Comments` / `Kyokai` / `MemoText` | `info` | 概要・注記文・境界コメント・メモ |
- * | `MemoInk` | `info.memoInk` | **Windows Ink の ISF。解釈せず素通しで書き戻す** |
+ * | `MemoStrokes` | `info.memoStrokes` | 手書きメモ（点列）。**`MemoInk`（ISF）は読んでも捨てる**（issue #39・案 B） |
  *
  * ## 落ちる情報
  *
@@ -56,6 +56,7 @@ import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '../core/layer.js';
 import { looksLikeZip, unzip, zip } from './zip.js';
 import { DEFAULT_POINT_STYLE, normalizeMode } from '../core/point-style.js';
+import { cloneStrokes, normalizeStrokes } from '../core/ink.js';
 import { normalizeLevelRows, type LevelRow } from '../survey/level.js';
 import {
   emptyDocumentInfo,
@@ -161,8 +162,14 @@ export interface Tc2DocDto {
   /** レベル（水準）（0 件のときデスクトップ版は出さない）。 */
   Level?: Tc2LevelDto[] | null;
   MemoText?: string | null;
-  /** 手書きメモ（Windows Ink の ISF を Base64 化）。**解釈せず素通しする。** */
+  /**
+   * 手書きメモ（Windows Ink の ISF を Base64 化）。**読んでも使わない**
+   * （issue #39・案 B で点列へ寄せた）。デスクトップ版が古い形式で書いた
+   * ファイルを開けるよう、型としては残す。
+   */
   MemoInk?: string | null;
+  /** 手書きメモ（点列）。Web とデスクトップ版で共通の形式。 */
+  MemoStrokes?: unknown;
   [key: string]: unknown; // 測量データなど、Web 版が使わない項目はそのまま無視する
 }
 
@@ -372,7 +379,8 @@ export function tc2InfoToDocument(dto: Tc2DocDto): DocumentInfo {
   }
   info.memoText = dto.MemoText ?? '';
   // 手書きメモは中身を見ない（Windows Ink の ISF。Web では描けない）
-  info.memoInk = dto.MemoInk ?? '';
+  // ISF（MemoInk）は読まない（案 B）。点列だけを受ける
+  info.memoStrokes = normalizeStrokes(dto.MemoStrokes);
   return info;
 }
 
@@ -560,7 +568,7 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     if (info.kyokai.length > 0) out.Kyokai = info.kyokai.map((k) => ({ Name: k.name, Kind: k.kind }));
     if (info.memoText !== '') out.MemoText = info.memoText;
     // **読んだままを書き戻す。** Web では描けないが、消してはいけない
-    if (info.memoInk !== '') out.MemoInk = info.memoInk;
+    if (info.memoStrokes.length > 0) out.MemoStrokes = cloneStrokes(info.memoStrokes);
   }
 
   const level = normalizeLevelRows(json.level);

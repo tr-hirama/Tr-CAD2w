@@ -72,6 +72,7 @@ import {
   type ToolName,
 } from './tools.js';
 import { ErrorGuard } from './error-guard.js';
+import { InkPad } from './ink-pad.js';
 import { calcLevel, summarizeLevel } from '../survey/level.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
@@ -475,13 +476,40 @@ export class CadApp {
     const text = window.prompt('メモ', this.doc.info.memoText);
     if (text === null) return;
     this.doc.info.memoText = text;
-    const ink = this.doc.info.memoInk;
+    const strokes = this.doc.info.memoStrokes;
     this.setStatus(
-      ink === ''
+      strokes.length === 0
         ? 'メモを更新しました'
-        : `メモを更新しました（手書きメモ ${Math.round(ink.length / 1024)}KB はそのまま保ちます）`,
+        : `メモを更新しました（手書き ${strokes.length} 本はそのまま残ります）`,
     );
   }
+
+  /**
+   * 手書きメモを描く（issue #39・案 B）。
+   *
+   * 画面いっぱいのオーバーレイを開き、点列として保存する。**ISF は持たない**ので、
+   * ここで描いたものがそのまま `.tc2` の `MemoStrokes` になる。
+   */
+  editMemoInk(): void {
+    if (this.inkPad) return; // 二重に開かない
+    this.inkPad = new InkPad(this.doc.info.memoStrokes, {
+      onSave: (strokes) => {
+        this.doc.info.memoStrokes = strokes;
+        this.setStatus(
+          strokes.length === 0
+            ? '手書きメモを消しました'
+            : `手書きメモを保存しました（${strokes.length} 本）`,
+        );
+      },
+      onClose: () => {
+        this.inkPad = null;
+      },
+    });
+    this.setStatus('手書きメモ: ペンで描き、消しゴムで消します（Esc で閉じる）');
+  }
+
+  /** 開いている手書きメモの面（二重に開かないため）。 */
+  private inkPad: InkPad | null = null;
 
   /** 概要を画面のタイトルへ出す（デスクトップ版はタイトルバーに出す）。 */
   private updateTitle(): void {
@@ -1423,6 +1451,9 @@ export class CadApp {
           break;
         case 'memo':
           this.editMemo();
+          break;
+        case 'memo-ink':
+          this.editMemoInk();
           break;
         case 'hatch-pattern':
           this.cycleHatchPattern();
