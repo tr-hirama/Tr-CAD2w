@@ -72,6 +72,8 @@ import {
   type ToolName,
 } from './tools.js';
 import { ErrorGuard } from './error-guard.js';
+import { InkPad } from './ink-pad.js';
+import { calcLevel, summarizeLevel } from '../survey/level.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
 import {
@@ -133,6 +135,9 @@ export class CadApp {
       layerList: HTMLElement;
       /** 空間（モデル / レイアウト）の切替タブ。 */
       layoutTabs: HTMLElement;
+      /** レベル（水準）の枠（無い図面では隠す）。 */
+      levelPanel: HTMLElement;
+      levelList: HTMLElement;
     },
   ) {
     this.renderer = new Renderer(canvas);
@@ -144,6 +149,7 @@ export class CadApp {
     this.bindToolbar();
     this.bindDragAndDrop();
     this.buildLayerList();
+    this.buildLevelList();
     this.buildLayoutTabs();
 
     const ro = new ResizeObserver(() => this.handleResize());
@@ -341,6 +347,7 @@ export class CadApp {
         this.setStatus(`${picked.name} を開きました（${this.doc.count} 図形）`);
       }
       this.buildLayerList();
+      this.buildLevelList();
       this.zoomFit();
     } catch (err) {
       this.setStatus(`${picked.name} を開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
@@ -469,13 +476,40 @@ export class CadApp {
     const text = window.prompt('メモ', this.doc.info.memoText);
     if (text === null) return;
     this.doc.info.memoText = text;
-    const ink = this.doc.info.memoInk;
+    const strokes = this.doc.info.memoStrokes;
     this.setStatus(
-      ink === ''
+      strokes.length === 0
         ? 'メモを更新しました'
-        : `メモを更新しました（手書きメモ ${Math.round(ink.length / 1024)}KB はそのまま保ちます）`,
+        : `メモを更新しました（手書き ${strokes.length} 本はそのまま残ります）`,
     );
   }
+
+  /**
+   * 手書きメモを描く（issue #39・案 B）。
+   *
+   * 画面いっぱいのオーバーレイを開き、点列として保存する。**ISF は持たない**ので、
+   * ここで描いたものがそのまま `.tc2` の `MemoStrokes` になる。
+   */
+  editMemoInk(): void {
+    if (this.inkPad) return; // 二重に開かない
+    this.inkPad = new InkPad(this.doc.info.memoStrokes, {
+      onSave: (strokes) => {
+        this.doc.info.memoStrokes = strokes;
+        this.setStatus(
+          strokes.length === 0
+            ? '手書きメモを消しました'
+            : `手書きメモを保存しました（${strokes.length} 本）`,
+        );
+      },
+      onClose: () => {
+        this.inkPad = null;
+      },
+    });
+    this.setStatus('手書きメモ: ペンで描き、消しゴムで消します（Esc で閉じる）');
+  }
+
+  /** 開いている手書きメモの面（二重に開かないため）。 */
+  private inkPad: InkPad | null = null;
 
   /** 概要を画面のタイトルへ出す（デスクトップ版はタイトルバーに出す）。 */
   private updateTitle(): void {
@@ -1418,6 +1452,9 @@ export class CadApp {
         case 'memo':
           this.editMemo();
           break;
+        case 'memo-ink':
+          this.editMemoInk();
+          break;
         case 'hatch-pattern':
           this.cycleHatchPattern();
           break;
@@ -1483,6 +1520,63 @@ export class CadApp {
       if (tool) btn.classList.toggle('active', tool === this.tool.name);
       if (btn.dataset['cmd'] === 'osnap') btn.classList.toggle('active', this.snapSettings.objectSnap);
       if (btn.dataset['cmd'] === 'gsnap') btn.classList.toggle('active', this.snapSettings.gridSnap);
+    }
+  }
+
+  /**
+   * レベル（水準）の一覧（**表示だけ**。issue #29 の 1/3）。
+   *
+   * `.tc2` から読んだ入力を器高式で解いて、測点・後視・前視・地盤高を並べる。
+   * **解けなかった行は数と理由を出す**（黙って消すと、入力の取りこぼしに気づけない）。
+   * レベルが無い図面では枠ごと隠す。
+   */
+  private buildLevelList(): void {
+    const panel = this.ui.levelPanel;
+    const host = this.ui.levelList;
+    if (!panel || !host) return;
+    panel.hidden = this.doc.level.length === 0;
+    if (panel.hidden) return;
+
+    host.textContent = '';
+    const calc = calcLevel(this.doc.level);
+
+    const t = document.createElement('table');
+    t.className = 'level-table';
+    const head = document.createElement('tr');
+    for (const label of ['測点', '後視', '前視', '地盤高']) {
+      const th = document.createElement('th');
+      th.textContent = label;
+      head.append(th);
+    }
+    t.append(head);
+    for (const row of calc.rows) {
+      const tr = document.createElement('tr');
+      if (row.kind === 'instrument') tr.className = 'instrument';
+      const cells = [row.name, fmt(row.bs), fmt(row.fs), fmt(row.gh)];
+      for (const v of cells) {
+        const td = document.createElement('td');
+        td.textContent = v;
+        tr.append(td);
+      }
+      t.append(tr);
+    }
+    host.append(t);
+
+    const s = summarizeLevel(calc);
+    const sum = document.createElement('p');
+    sum.className = 'level-note';
+    sum.textContent = `後視計 ${fmt(s.totalBs)} ／ 前視計 ${fmt(s.totalFs)} ／ 高低差 ${fmt(s.difference)}（${s.resolved} 点）`;
+    host.append(sum);
+
+    if (calc.unresolved.length > 0) {
+      const warn = document.createElement('p');
+      warn.className = 'level-note warn';
+      const first = calc.unresolved[0]!;
+      warn.textContent =
+        calc.unresolved.length === 1
+          ? `解けない行が 1 件: ${first.name} — ${first.reason}`
+          : `解けない行が ${calc.unresolved.length} 件（例: ${first.name} — ${first.reason}）`;
+      host.append(warn);
     }
   }
 
@@ -1629,13 +1723,10 @@ export class CadApp {
       `描画 ${this.lastStats.drawn} (${this.lastStats.ms.toFixed(1)}ms)`,
     ];
     if (sel === 1) {
-      const e = this.doc.selectedEntities()[0]!;
-      const len = entityLength(e);
-      const area = entityArea(e);
-      const detail = [`種別 ${e.kind}`];
-      if (len > 0) detail.push(`長さ ${len.toFixed(1)}mm`);
-      if (area > 0) detail.push(`面積 ${(area / 1_000_000).toFixed(3)}㎡`);
-      parts.push(detail.join('  '));
+      // **いま開いている空間から拾う。** モデル空間だけを見ると、用紙空間で
+      // 図形を選んだときに undefined を掴んで落ちる（issue #40）
+      const detail = selectionDetail(this.selectedInSpace()[0], this.selectedViewport());
+      if (detail !== '') parts.push(detail);
     }
     this.ui.info.textContent = parts.join('  |  ') + snapText;
   }
@@ -1705,6 +1796,35 @@ export function base64OfBytes(bytes: Uint8Array): string {
 /** 縮尺の分母の表示（`1:200` / `1:2.5`）。整数はそのまま、端数だけ小数で見せる。 */
 export function formatDenominator(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+/**
+ * 選択が 1 つのときに情報行へ出す説明（issue #40）。
+ *
+ * **図形とビューポートは別物。** ビューポートは `Entity` ではないので
+ * `entityLength` / `entityArea` に渡してはいけない。どちらも無ければ空文字。
+ */
+export function selectionDetail(entity: Entity | undefined, viewport: Viewport | null): string {
+  if (entity) {
+    const len = entityLength(entity);
+    const area = entityArea(entity);
+    const detail = [`種別 ${entity.kind}`];
+    if (len > 0) detail.push(`長さ ${len.toFixed(1)}mm`);
+    if (area > 0) detail.push(`面積 ${(area / 1_000_000).toFixed(3)}㎡`);
+    return detail.join('  ');
+  }
+  if (viewport) {
+    return `種別 ビューポート  縮尺 1:${formatDenominator(viewport.scaleDenominator)}  回転 ${Math.round(deg(viewport.rotation))}°`;
+  }
+  // 選択はあるが、いま開いている空間には無い（別の空間の図形）
+  return '';
+}
+
+/** レベルの数値表示（m）。`null` は空欄。端数は 3 桁まで。 */
+function fmt(v: number | null): string {
+  if (v === null || !Number.isFinite(v)) return '';
+  // 桁を揃える。帳票では 1.5 と 11.25 が並ぶより 1.500 / 11.250 の方が比べやすい
+  return v.toFixed(3);
 }
 
 /** 閉じた点列の**辺の近く**か（ビューポートの枠を掴むのに使う）。 */

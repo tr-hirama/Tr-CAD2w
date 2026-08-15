@@ -1,11 +1,13 @@
+import { cloneStrokes, normalizeStrokes, type InkStroke } from './ink.js';
+
 /**
  * 図面に付ける「文書情報」— 概要・注記文・境界コメント・メモ。
  *
  * デスクトップ版 TrCad2D の `ProjectInfoDto` / `CommentSelDto` /
- * `KyokaiCommentDto` / `MemoText` / `MemoInk` の移植。図形ではないので
+ * `KyokaiCommentDto` / `MemoText` / `MemoStrokes` の移植。図形ではないので
  * 描画には出ず、**保存と `.tc2` の往復のためだけに持つ**。
  *
- * ## 手書きメモ（`memoInk`）は素通し
+ * ## 手書きメモ（`memoStrokes`）は点列で持つ
  *
  * デスクトップ版の手書きメモは **Windows Ink の ISF を Base64 化した文字列**で、
  * ブラウザでは描くことも編集することもできない。**中身を解釈せずそのまま持ち、
@@ -45,16 +47,18 @@ export interface DocumentInfo {
   /** メモ（テキスト）。 */
   memoText: string;
   /**
-   * メモ（手書き）。**Windows Ink の ISF を Base64 にした文字列**。
-   * Web では描けないので**解釈せず素通しで保つ**。
+   * メモ（手書き）。**点列**で持つ（issue #39・案 B）。
+   *
+   * 以前は Windows Ink の ISF を素通しで保っていたが、ブラウザに読み書きする
+   * 手段が無く Web から編集できなかった。**ISF は持たない**（読んでも捨てる）。
    */
-  memoInk: string;
+  memoStrokes: InkStroke[];
 }
 
 export const EMPTY_PROJECT: ProjectInfo = { name: '', code: '', worker: '', note: '' };
 
 export function emptyDocumentInfo(): DocumentInfo {
-  return { project: { ...EMPTY_PROJECT }, comments: [], kyokai: [], memoText: '', memoInk: '' };
+  return { project: { ...EMPTY_PROJECT }, comments: [], kyokai: [], memoText: '', memoStrokes: [] };
 }
 
 /** 概要が空か（デスクトップ版 `ProjectInfoDto.IsEmpty` と同じ判定）。 */
@@ -69,7 +73,7 @@ export function isDocumentInfoEmpty(info: DocumentInfo): boolean {
     info.comments.length === 0 &&
     info.kyokai.length === 0 &&
     info.memoText === '' &&
-    info.memoInk === ''
+    info.memoStrokes.length === 0
   );
 }
 
@@ -80,7 +84,7 @@ export function cloneDocumentInfo(info: DocumentInfo): DocumentInfo {
     comments: info.comments.map((c) => ({ ...c })),
     kyokai: info.kyokai.map((k) => ({ ...k })),
     memoText: info.memoText,
-    memoInk: info.memoInk,
+    memoStrokes: cloneStrokes(info.memoStrokes),
   };
 }
 
@@ -112,7 +116,7 @@ export function normalizeDocumentInfo(raw: unknown): DocumentInfo {
       .map((k) => ({ name: str(k.name), kind: str(k.kind) }));
   }
   out.memoText = str(o.memoText);
-  out.memoInk = str(o.memoInk);
+  out.memoStrokes = normalizeStrokes(o.memoStrokes);
   return out;
 }
 

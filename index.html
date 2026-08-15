@@ -24,6 +24,7 @@
           <button type="button" data-cmd="comment-text" title="選んだ注記文の本文を直す">注記文の編集</button>
           <button type="button" data-cmd="kyokai" title="境界コメント（境界番号と境界標の種類）を足す">境界コメント</button>
           <button type="button" data-cmd="memo" title="メモ（テキスト）">メモ</button>
+          <button type="button" data-cmd="memo-ink" title="手書きメモを描く・消す">手書き</button>
         </div>
         <div class="group">
           <button type="button" data-tool="select" title="選択 (S)">選択</button>
@@ -81,6 +82,10 @@
       <aside id="sidebar">
         <h2>画層</h2>
         <div id="layer-list"></div>
+        <div id="level-panel" hidden>
+          <h2>レベル（水準）</h2>
+          <div id="level-list"></div>
+        </div>
         <h2>操作</h2>
         <ul class="help">
           <li>ホイール = ズーム（カーソル固定）</li>
