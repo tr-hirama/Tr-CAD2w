@@ -21,10 +21,20 @@ import {
   entityArea,
   entityLength,
   translateEntity,
+  type DimEntity,
   type Entity,
   type NewEntity,
 } from '../core/entity.js';
-import { DEFAULT_DRAW_ATTRS, DrawTool, TOOL_KEYS, TOOL_LABEL, promptFor, type DrawAttrs, type ToolName } from './tools.js';
+import {
+  DEFAULT_DRAW_ATTRS,
+  DrawTool,
+  TOOL_KEYS,
+  TOOL_LABEL,
+  buildRadialDim,
+  promptFor,
+  type DrawAttrs,
+  type ToolName,
+} from './tools.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import {
   decodeUtf8,
@@ -365,6 +375,18 @@ export class CadApp {
       this.handleLeftClick();
     });
 
+    // 寸法をダブルクリックすると値を手で書き換えられる
+    c.addEventListener('dblclick', (ev) => {
+      const at = this.screenPoint(ev);
+      this.updateCursor(at);
+      const hit = this.doc.pick(this.cursorWorld, this.view.toWorldLen(6));
+      if (!hit || hit.kind !== 'dim') return;
+      ev.preventDefault();
+      this.doc.selection.clear();
+      this.doc.selection.add(hit.id);
+      this.editDimText();
+    });
+
     c.addEventListener(
       'wheel',
       (ev) => {
@@ -449,6 +471,10 @@ export class CadApp {
         case 'Home':
           this.zoomFit();
           return;
+        case 'F2':
+          ev.preventDefault();
+          this.editDimText();
+          return;
         case 'F3':
           ev.preventDefault();
           this.toggleObjectSnap();
@@ -498,6 +524,11 @@ export class CadApp {
       return;
     }
 
+    if (this.tool.name === 'dim-radius' || this.tool.name === 'dim-diameter') {
+      this.handleRadialDimClick(p);
+      return;
+    }
+
     if (this.tool.name === 'text' && this.tool.pointCount === 0) {
       const input = window.prompt('文字列', this.tool.pendingText || '');
       if (input === null || input === '') return;
@@ -513,6 +544,49 @@ export class CadApp {
       this.doc.selection.clear();
       for (const e of created) this.doc.selection.add(e.id);
     }
+    this.markDirty();
+  }
+
+  /**
+   * 半径・直径の寸法。**円／弧をクリックすると中心と半径を図形から採って即作図する。**
+   * 引き出す向きは押した位置（中心から見た方向）に追従する。
+   */
+  private handleRadialDimClick(p: Vec2): void {
+    const dimType = this.tool.name === 'dim-diameter' ? 'diameter' : 'radius';
+    // 吸着で中心へ寄ると向きが決まらないので、当たり判定にはカーソルの実位置を使う
+    const raw = this.cursorWorld;
+    const tol = this.view.toWorldLen(6);
+    const hit = this.doc.pick(raw, tol) ?? this.doc.pick(p, tol);
+    if (!hit || (hit.kind !== 'circle' && hit.kind !== 'arc')) {
+      this.setStatus('円または円弧をクリックしてください');
+      return;
+    }
+    const created = buildRadialDim(dimType, hit.center, hit.radius, raw, this.attrs);
+    if (!created) return;
+    this.doc.beginEdit();
+    const added = this.doc.add(created);
+    this.doc.selection.clear();
+    this.doc.selection.add(added.id);
+    this.setStatus(`${TOOL_LABEL[this.tool.name]}を作図しました（計 ${this.doc.count} 図形）`);
+    this.markDirty();
+  }
+
+  /**
+   * 寸法値の手動上書き（ダブルクリック／`F2`）。
+   * 空欄に戻すと自動計測値、`<>` は計測値に置き換わる（`約<>cm` のように書ける）。
+   */
+  editDimText(): void {
+    const dims = this.doc.selectedEntities().filter((e): e is DimEntity => e.kind === 'dim');
+    if (dims.length === 0) {
+      this.setStatus('寸法を選択してから実行してください（ダブルクリックでも開きます）');
+      return;
+    }
+    const current = dims[0]!.text;
+    const input = window.prompt('寸法値（空欄＝自動。<> は計測値に置き換わります）', current);
+    if (input === null) return;
+    this.doc.beginEdit();
+    for (const d of dims) this.doc.replace({ ...d, text: input });
+    this.setStatus(input === '' ? `${dims.length} 個を自動計測値に戻しました` : `${dims.length} 個の寸法値を変えました`);
     this.markDirty();
   }
 
@@ -631,6 +705,9 @@ export class CadApp {
           break;
         case 'print':
           this.openPrintDialog();
+          break;
+        case 'dim-text':
+          this.editDimText();
           break;
         case 'undo':
           this.undo();
