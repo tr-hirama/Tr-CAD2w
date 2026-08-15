@@ -14,6 +14,7 @@ import { SpatialIndex } from './spatial-index.js';
 import type { LayoutSpace } from './layout.js';
 import { explodeInsert, type BlockDef } from './block.js';
 import { DEFAULT_POINT_STYLE, normalizeMode, type PointStyle } from './point-style.js';
+import { cloneLevelRows, normalizeLevelRows, type LevelRow } from '../survey/level.js';
 import {
   cloneKenTable,
   emptyKenTable,
@@ -68,6 +69,12 @@ export interface DocumentJson {
    * `FILE_FORMAT_VERSION` は上げていない）。
    */
   ken?: KenTable;
+  /**
+   * レベル（水準）。**省略可**
+   * （この機能より前のファイルも読めるよう任意にしてあるので
+   * `FILE_FORMAT_VERSION` は上げていない）。
+   */
+  level?: LevelRow[];
 }
 
 export const DEFAULT_LINETYPE_SCALE = 500;
@@ -109,6 +116,8 @@ export class CadDocument {
   info: DocumentInfo = emptyDocumentInfo();
   /** まわりけん（境界辺長）。**この版は表示だけ**（issue #28）。 */
   ken: KenTable = emptyKenTable();
+  /** レベル（水準）の入力行。**この版は表示だけ**（issue #29 の 1/3）。 */
+  level: LevelRow[] = [];
   /**
    * 用紙空間（レイアウト）。**モデル空間とは線種尺度が別**（用紙側は 5）。
    * 同じ尺度だと A4 より長い破線になって実線に見えてしまう。
@@ -281,6 +290,7 @@ export class CadDocument {
     this.pointStyle = { ...DEFAULT_POINT_STYLE };
     this.info = emptyDocumentInfo();
     this.ken = emptyKenTable();
+    this.level = [];
     this.afterMutate();
   }
 
@@ -401,6 +411,8 @@ export class CadDocument {
     if (!isDocumentInfoEmpty(this.info)) json.info = cloneDocumentInfo(this.info);
     // 空のまわりけんは出さない（古い読み手を驚かせない）
     if (!isKenTableEmpty(this.ken)) json.ken = cloneKenTable(this.ken);
+    // 空のレベルは出さない（古い読み手を驚かせない）
+    if (this.level.length > 0) json.level = cloneLevelRows(this.level);
     // ブロックが無い図面には blocks を出さない（古い読み手を驚かせない）
     if (this.blocks.length > 0) {
       json.blocks = this.blocks.map((b) => ({ name: b.name, entities: b.entities.map(cloneEntity) }));
@@ -446,6 +458,7 @@ export class CadDocument {
     const info = normalizeDocumentInfo(json.info);
     // 壊れたまわりけんのせいで図面が開けなくならないよう、形を整えてから受ける
     const ken = normalizeKenTable(json.ken);
+    const level = normalizeLevelRows(json.level);
     // 点スタイルは省略可。壊れた値は既定へ落とす（描けなくならないように）
     const pointStyle: PointStyle = {
       mode: normalizeMode(json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode),
@@ -462,6 +475,7 @@ export class CadDocument {
     this.pointStyle = pointStyle;
     this.info = info;
     this.ken = ken;
+    this.level = level;
     this.entityList = entities;
     this.layouts = layouts;
     this.blocks = blocks;

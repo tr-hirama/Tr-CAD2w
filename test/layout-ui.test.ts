@@ -18,7 +18,7 @@ import {
   viewportCorners,
   viewportModelExtent,
 } from '../src/core/layout.js';
-import { formatDenominator } from '../src/ui/app.js';
+import { formatDenominator, selectionDetail } from '../src/ui/app.js';
 
 /** 紙 (10,10)-(110,60) の窓に、モデル原点まわりを 1:100 で映す。 */
 const vp = makeViewport(1, { x: 10, y: 10, width: 100, height: 50 }, vec(0, 0), 100);
@@ -227,5 +227,43 @@ describe('用紙空間の図形は紙 mm', () => {
     const b = entityBounds(l.entities[0]!);
     expect(b.maxX).toBeLessThanOrEqual(297);
     expect(b.maxY).toBeLessThanOrEqual(210);
+  });
+});
+
+/**
+ * 用紙空間で図形やビューポートを 1 つ選んだときの情報行（issue #40）。
+ *
+ * 直す前は `updateInfo` が**モデル空間の選択だけ**を見ていたため、用紙空間で
+ * 何かを選ぶと `undefined` を掴んで例外になり、描画ループごと止まっていた。
+ */
+describe('選択の説明（issue #40）', () => {
+  const line: LineEntity = { ...DEFAULT_ATTRS, id: 1, kind: 'line', a: vec(0, 0), b: vec(3, 4) };
+
+  it('図形は種別と長さを出す', () => {
+    const s = selectionDetail(line, null);
+    expect(s).toContain('種別 line');
+    expect(s).toContain('長さ 5.0mm');
+  });
+
+  it('面積のある図形は面積も出す', () => {
+    const rect = { ...DEFAULT_ATTRS, id: 2, kind: 'rect' as const, a: vec(0, 0), b: vec(1000, 1000) };
+    expect(selectionDetail(rect, null)).toContain('面積');
+  });
+
+  /** ビューポートは Entity ではない。entityLength に渡すと落ちる。 */
+  it('ビューポートは縮尺と回転を出す', () => {
+    const s = selectionDetail(undefined, vp);
+    expect(s).toContain('種別 ビューポート');
+    expect(s).toContain('縮尺 1:100');
+    expect(s).toContain('回転 0°');
+  });
+
+  /** ここが本体。**例外を投げずに空文字を返す**こと。 */
+  it('どちらも無ければ空文字（例外を投げない）', () => {
+    expect(selectionDetail(undefined, null)).toBe('');
+  });
+
+  it('図形が優先される（両方あるときは図形）', () => {
+    expect(selectionDetail(line, vp)).toContain('種別 line');
   });
 });

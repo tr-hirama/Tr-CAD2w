@@ -14,7 +14,10 @@ import { STANDARD_COMMENTS, commentTextToLines, findStandardComment } from '../s
 import { documentToTc2Json, tc2InfoToDocument, tc2JsonToDocument, type Tc2DocDto } from '../src/io/tc2.js';
 
 /** Windows Ink の ISF を Base64 化した文字列の模擬（中身は解釈しない）。 */
-const INK = 'AH8LAMgLZQGnAdvA1oLGxsbHhcLGxsfFwsbGx4XCxsbHhcLGxsc=';
+/** 手書きメモのサンプル（点列。issue #39・案 B で ISF から置き換えた）。 */
+const STROKES = [
+  { points: [{ x: 0, y: 0, p: 0.5 }, { x: 0.5, y: 0.25, p: 0.75 }], color: '#1b1b1b', width: 0.004 },
+];
 
 function filled(): DocumentInfo {
   return {
@@ -22,7 +25,7 @@ function filled(): DocumentInfo {
     comments: [{ key: '3', checked: true, text: '境界標は確認致しましたが、|所有権境をご確認ください。' }],
     kyokai: [{ name: '1', kind: 'RC杭' }],
     memoText: '現地は雨',
-    memoInk: INK,
+    memoStrokes: STROKES,
   };
 }
 
@@ -56,9 +59,9 @@ describe('文書情報の基本', () => {
     expect(isDocumentInfoEmpty(filled())).toBe(false);
   });
 
-  it('手書きメモだけでも「空ではない」（素通しの中身を捨てない）', () => {
+  it('手書きメモだけでも「空ではない」', () => {
     const info = emptyDocumentInfo();
-    info.memoInk = INK;
+    info.memoStrokes = STROKES;
     expect(isDocumentInfoEmpty(info)).toBe(false);
   });
 
@@ -92,10 +95,10 @@ describe('壊れた値の受け止め', () => {
   });
 
   it('文字列でない項目は空文字にする', () => {
-    const got = normalizeDocumentInfo({ project: { name: 123, code: null }, memoText: {}, memoInk: [] });
+    const got = normalizeDocumentInfo({ project: { name: 123, code: null }, memoText: {}, memoStrokes: 'x' });
     expect(got.project.name).toBe('');
     expect(got.memoText).toBe('');
-    expect(got.memoInk).toBe('');
+    expect(got.memoStrokes).toEqual([]);
   });
 
   it('配列でない comments / kyokai は捨てる', () => {
@@ -144,13 +147,13 @@ describe('.tc2w（JSON）の往復', () => {
     expect(back.info).toEqual(filled());
   });
 
-  it('**手書きメモは中身そのままで戻る**（Web で開いて保存しても消えない）', () => {
+  it('**手書きメモ（点列）はそのまま戻る**', () => {
     const doc = new CadDocument();
     doc.clear();
-    doc.info.memoInk = INK;
+    doc.info.memoStrokes = STROKES;
     const back = new CadDocument();
     back.loadJson(JSON.parse(JSON.stringify(doc.toJson())) as DocumentJson);
-    expect(back.info.memoInk).toBe(INK);
+    expect(back.info.memoStrokes).toEqual(STROKES);
   });
 
   it('何も入っていなければ info を書かない（古い読み手を驚かせない）', () => {
@@ -194,9 +197,11 @@ describe('.tc2 の往復', () => {
     expect(dto.MemoText).toBe('現地は雨');
   });
 
-  it('**MemoInk は解釈せずそのまま書き戻す**', () => {
+  /** 案 B（issue #39）で ISF は捨て、点列だけを書くようになった。 */
+  it('**MemoStrokes を書き、MemoInk は書かない**', () => {
     const dto = documentToTc2Json(docJson(filled()));
-    expect(dto.MemoInk).toBe(INK);
+    expect(dto.MemoStrokes).toEqual(STROKES);
+    expect(dto.MemoInk).toBeUndefined();
   });
 
   it('.tc2 → Web → .tc2 で手書きメモが一致する（往復で消えない）', () => {
@@ -204,13 +209,13 @@ describe('.tc2 の往復', () => {
       Layers: [{ Name: '0', Color: 0xffffffff, Visible: true }],
       CurrentLayer: '0',
       Entities: [],
-      MemoInk: INK,
+      MemoStrokes: STROKES,
       MemoText: 'テキストのメモ',
     };
     const web = tc2JsonToDocument(src).json;
-    expect(web.info?.memoInk).toBe(INK);
+    expect(web.info?.memoStrokes).toEqual(STROKES);
     const again = documentToTc2Json(web);
-    expect(again.MemoInk).toBe(INK);
+    expect(again.MemoStrokes).toEqual(STROKES);
     expect(again.MemoText).toBe('テキストのメモ');
   });
 

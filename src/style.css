@@ -379,23 +379,68 @@ body {
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
 
-/* まわりけん（表示だけ。issue #28） */
-#ken-panel .ken-table {
+/* 手書きメモの入力面（issue #39） */
+.ink-pad {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.ink-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-wrap: wrap;
+}
+.ink-bar button.active {
+  outline: 2px solid var(--accent, #2980b9);
+}
+/* 色は四角いボタンで見せる（文字は入れない） */
+.ink-bar .ink-color {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.ink-status {
+  margin-left: auto;
+  font-size: 12px;
+  opacity: 0.75;
+}
+.ink-canvas {
+  flex: 1;
+  width: 100%;
+  /* ブラウザのスクロール／ズームに軌跡を横取りさせない */
+  touch-action: none;
+  background: var(--bg);
+}
+
+/* まわりけん（#28）とレベル（#29）。どちらも表示だけの表なので体裁を揃える */
+#ken-panel .ken-table,
+#level-panel .level-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
 }
-#ken-panel .ken-table th {
+#ken-panel .ken-table th,
+#level-panel .level-table th {
   text-align: left;
   font-weight: 600;
   opacity: 0.7;
   padding: 1px 4px 1px 0;
 }
-#ken-panel .ken-table td {
+#ken-panel .ken-table td,
+#level-panel .level-table td {
   padding: 1px 4px 1px 0;
   white-space: nowrap;
 }
-/* 3 列目（計算値）は右揃えにして桁を比べやすくする */
+/* まわりけん: 3 列目（計算値）は右揃えにして桁を比べやすくする */
 #ken-panel .ken-table td:nth-child(3),
 #ken-panel .ken-table th:nth-child(3) {
   text-align: right;
@@ -404,7 +449,18 @@ body {
 #ken-panel .ken-table tr.unable td {
   opacity: 0.5;
 }
-#ken-panel .ken-note {
+/* レベル: 数値の列は右揃えにして桁を比べやすくする */
+#level-panel .level-table td:not(:first-child),
+#level-panel .level-table th:not(:first-child) {
+  text-align: right;
+}
+/* 器械を据えた行（後視のある行）は区切りとして目立たせる */
+#level-panel .level-table tr.instrument td {
+  border-top: 1px solid var(--border);
+  font-weight: 600;
+}
+#ken-panel .ken-note,
+#level-panel .level-note {
   margin: 4px 0 0;
   font-size: 11px;
   opacity: 0.75;
@@ -423,7 +479,8 @@ body {
   color: #c0392b;
   font-weight: 600;
 }
-#ken-panel .ken-note.warn {
+#ken-panel .ken-note.warn,
+#level-panel .level-note.warn {
   opacity: 1;
   color: #c0392b;
 }

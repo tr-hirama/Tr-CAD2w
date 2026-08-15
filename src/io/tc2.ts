@@ -22,7 +22,7 @@
  * | `LtScale` | `lineTypeScale` | 無ければ 500 |
  * | `PointMode` / `PointSize` | `pointStyle`（`PDMODE` / `PDSIZE` 相当） | 無ければ `＋`・画面固定 |
  * | `Project` / `Comments` / `Kyokai` / `MemoText` | `info` | 概要・注記文・境界コメント・メモ |
- * | `MemoInk` | `info.memoInk` | **Windows Ink の ISF。解釈せず素通しで書き戻す** |
+ * | `MemoStrokes` | `info.memoStrokes` | 手書きメモ（点列）。**`MemoInk`（ISF）は読んでも捨てる**（issue #39・案 B） |
  *
  * ## 落ちる情報
  *
@@ -57,6 +57,8 @@ import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '.
 import { looksLikeZip, unzip, zip } from './zip.js';
 import { DEFAULT_POINT_STYLE, normalizeMode } from '../core/point-style.js';
 import { isKenTableEmpty, normalizeKenTable, type KenTable } from '../survey/ken.js';
+import { cloneStrokes, normalizeStrokes } from '../core/ink.js';
+import { normalizeLevelRows, type LevelRow } from '../survey/level.js';
 import {
   emptyDocumentInfo,
   isDocumentInfoEmpty,
@@ -134,6 +136,20 @@ export interface Tc2KenDto {
   Unable?: boolean;
 }
 
+/**
+ * レベル（水準）（デスクトップ版 `SurveyLevelDto(Name, BS, FS, GH, Remarks, TP, CK)`）。
+ * **すべて文字列**。空欄・非数値・`[点番]` 参照が混ざるので、解釈は `survey/level.ts` が持つ。
+ */
+export interface Tc2LevelDto {
+  Name?: string | null;
+  BS?: string | null;
+  FS?: string | null;
+  GH?: string | null;
+  Remarks?: string | null;
+  TP?: string | null;
+  CK?: string | null;
+}
+
 /** 境界コメント（デスクトップ版 `KyokaiCommentDto`）。 */
 export interface Tc2KyokaiDto {
   Name?: string | null;
@@ -157,9 +173,17 @@ export interface Tc2DocDto {
   Ken?: Tc2KenDto[] | null;
   /** 計算点あり（デスクトップ版 `Keisanten`。常に出る）。 */
   Keisanten?: boolean;
+  /** レベル（水準）（0 件のときデスクトップ版は出さない）。 */
+  Level?: Tc2LevelDto[] | null;
   MemoText?: string | null;
-  /** 手書きメモ（Windows Ink の ISF を Base64 化）。**解釈せず素通しする。** */
+  /**
+   * 手書きメモ（Windows Ink の ISF を Base64 化）。**読んでも使わない**
+   * （issue #39・案 B で点列へ寄せた）。デスクトップ版が古い形式で書いた
+   * ファイルを開けるよう、型としては残す。
+   */
   MemoInk?: string | null;
+  /** 手書きメモ（点列）。Web とデスクトップ版で共通の形式。 */
+  MemoStrokes?: unknown;
   [key: string]: unknown; // 測量データなど、Web 版が使わない項目はそのまま無視する
 }
 
@@ -299,12 +323,11 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   }
 
   // 図形以外で落ちるもの（利用者に伝えるため名前だけ拾う）。
-  // **概要・コメント・境界コメント・メモ・まわりけんは取り込むのでここには挙げない**
+  // **概要・コメント・境界コメント・メモ・まわりけん・レベルは取り込むのでここには挙げない**
   const droppedSections: string[] = [];
   const SECTION_LABEL: Record<string, string> = {
     Obs: '観測データ',
     Coord: '座標',
-    Level: 'レベル',
     Transform: '座標変換',
     Blocks: 'ブロック定義',
     Layouts: '用紙空間',
@@ -349,6 +372,8 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   if (!isDocumentInfoEmpty(info)) json.info = info;
   const ken = tc2KenToDocument(dto);
   if (!isKenTableEmpty(ken)) json.ken = ken;
+  const level = tc2LevelToDocument(dto);
+  if (level.length > 0) json.level = level;
   return { json, skipped, droppedSections };
 }
 
@@ -369,7 +394,8 @@ export function tc2InfoToDocument(dto: Tc2DocDto): DocumentInfo {
   }
   info.memoText = dto.MemoText ?? '';
   // 手書きメモは中身を見ない（Windows Ink の ISF。Web では描けない）
-  info.memoInk = dto.MemoInk ?? '';
+  // ISF（MemoInk）は読まない（案 B）。点列だけを受ける
+  info.memoStrokes = normalizeStrokes(dto.MemoStrokes);
   return info;
 }
 
@@ -384,6 +410,21 @@ export function tc2KenToDocument(dto: Tc2DocDto): KenTable {
       unable: k.Unable === true,
     }));
   return { rows, keisanten: dto.Keisanten === true };
+}
+
+/** `.tc2` のレベル → Web 版の行。**文字列のまま持つ**（解釈は `survey/level.ts`）。 */
+export function tc2LevelToDocument(dto: Tc2DocDto): LevelRow[] {
+  return (dto.Level ?? [])
+    .filter((l): l is Tc2LevelDto => l !== null && l !== undefined)
+    .map((l) => ({
+      name: l.Name ?? '',
+      bs: l.BS ?? '',
+      fs: l.FS ?? '',
+      gh: l.GH ?? '',
+      remarks: l.Remarks ?? '',
+      tp: l.TP ?? '',
+      ck: l.CK ?? '',
+    }));
 }
 
 function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntity | null {
@@ -555,7 +596,21 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     if (info.kyokai.length > 0) out.Kyokai = info.kyokai.map((k) => ({ Name: k.name, Kind: k.kind }));
     if (info.memoText !== '') out.MemoText = info.memoText;
     // **読んだままを書き戻す。** Web では描けないが、消してはいけない
-    if (info.memoInk !== '') out.MemoInk = info.memoInk;
+    if (info.memoStrokes.length > 0) out.MemoStrokes = cloneStrokes(info.memoStrokes);
+  }
+
+  const level = normalizeLevelRows(json.level);
+  // 0 件のときデスクトップ版は Level を出さない。合わせる
+  if (level.length > 0) {
+    out.Level = level.map((r) => ({
+      Name: r.name,
+      BS: r.bs,
+      FS: r.fs,
+      GH: r.gh,
+      Remarks: r.remarks,
+      TP: r.tp,
+      CK: r.ck,
+    }));
   }
 
   const ken = normalizeKenTable(json.ken);

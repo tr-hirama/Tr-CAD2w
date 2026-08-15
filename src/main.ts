@@ -16,6 +16,8 @@ const app = new CadApp(required<HTMLCanvasElement>('canvas'), {
   layoutTabs: required('layout-tabs'),
   kenPanel: required('ken-panel'),
   kenList: required('ken-list'),
+  levelPanel: required('level-panel'),
+  levelList: required('level-list'),
 });
 
 // 動作確認用。開発者ツールから `TrCad2w.snapshot()` などを叩ける
