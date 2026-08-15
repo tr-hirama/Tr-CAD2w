@@ -15,6 +15,9 @@ import { dimGeometry } from '../core/dim-geom.js';
 import { effectiveColor, effectiveLineStyle, isLightBackground, type ColorContext } from '../core/layer.js';
 import { dashArrayPx, lineWidthPx, printLineWidthPx } from './linetype.js';
 import type { SnapResult } from '../core/snap.js';
+import type { LayoutSpace, Viewport } from '../core/layout.js';
+import { modelEntityToPaper, viewportCorners, viewportModelExtent } from '../core/layout.js';
+import { paperByName } from '../print/paper.js';
 
 export interface RenderOptions {
   background: string;
@@ -51,6 +54,26 @@ export const DEFAULT_RENDER: RenderOptions = {
   showAxis: true,
   selectionColor: '#ff3b30',
 };
+
+export interface LayoutRenderOptions extends RenderOptions {
+  /** 印刷可能領域を示す余白（mm）。0 なら描かない。 */
+  margin: number;
+  /**
+   * 紙の輪郭と机の色を描くか。**画面では描き、紙に刷るときは描かない**
+   * （紙の上に紙の枠を刷らない）。省略＝描く。
+   */
+  paperOutline?: boolean | undefined;
+  /** ビューポートの枠を描くか。省略＝描く（画面用）。刷るときは中身だけ出す。 */
+  viewportFrames?: boolean | undefined;
+}
+
+/** レイアウトの用紙寸法（向きを反映した mm）。 */
+export function paperExtentOf(layout: LayoutSpace): { width: number; height: number } {
+  const p = paperByName(layout.paper);
+  return layout.orientation === 'landscape'
+    ? { width: p.height, height: p.width }
+    : { width: p.width, height: p.height };
+}
 
 export interface RenderStats {
   /** 描画した図形数。 */
@@ -124,6 +147,149 @@ export class Renderer {
     return this.canvas.toDataURL(type);
   }
 
+  /**
+   * 用紙空間（レイアウト）を描く。ワールド＝**紙 mm・原点は紙の左下**。
+   *
+   * 1. 紙の輪郭と印刷可能領域
+   * 2. ビューポート（**窓の中にモデル空間を映し、窓の外は切り取る**）
+   * 3. 用紙空間に直接置いた図形（図枠・表題欄）。**線種尺度は用紙側**を使う
+   */
+  drawLayout(doc: CadDocument, layout: LayoutSpace, view: CadView, opts: LayoutRenderOptions): RenderStats {
+    const t0 = performance.now();
+    const ctx = this.ctx;
+    const colorCtx: ColorContext = {
+      layers: doc.layers,
+      background: opts.background,
+      darkBoost: opts.darkBoost,
+    };
+
+    const outline = opts.paperOutline !== false;
+    ctx.save();
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    // 画面では紙の外を「机の色」にして紙を浮かせる。刷るときは紙一面を背景色で塗る
+    ctx.fillStyle = outline
+      ? isLightBackground(opts.background)
+        ? '#8a8a8a'
+        : '#2a2a2a'
+      : opts.background;
+    ctx.fillRect(0, 0, view.width, view.height);
+
+    const size = paperExtentOf(layout);
+    if (outline) this.drawPaper(view, size, opts);
+
+    let drawn = 0;
+    for (const vp of layout.viewports) {
+      drawn += this.drawViewport(doc, vp, view, colorCtx, opts);
+    }
+
+    // 用紙空間の図形（紙 mm・線種尺度は用紙側）
+    for (const e of layout.entities) {
+      if (!doc.layers.isVisible(e.layer)) continue;
+      const highlight = opts.monochrome ? '#000000' : doc.selection.has(e.id) ? opts.selectionColor : undefined;
+      this.drawEntityWith(e, view, doc, colorCtx, layout.lineTypeScale, highlight, opts.lineWidthPxPerMm);
+      drawn++;
+    }
+
+    if (opts.preview) {
+      ctx.save();
+      ctx.globalAlpha = 0.8;
+      for (const e of opts.preview) {
+        this.drawEntityWith(e, view, doc, colorCtx, layout.lineTypeScale, opts.selectionColor, opts.lineWidthPxPerMm, true);
+      }
+      ctx.restore();
+    }
+    if (opts.selectionBox) this.drawSelectionBox(view, opts);
+    if (opts.snap) this.drawSnapMarker(view, opts.snap, opts.selectionColor);
+
+    ctx.restore();
+    return { drawn, total: layout.entities.length + layout.viewports.length, ms: performance.now() - t0 };
+  }
+
+  /** 紙の輪郭と印刷可能領域（余白の内側）。 */
+  private drawPaper(view: CadView, size: { width: number; height: number }, opts: LayoutRenderOptions): void {
+    const ctx = this.ctx;
+    const a = view.toScreen({ x: 0, y: size.height });
+    const b = view.toScreen({ x: size.width, y: 0 });
+
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.fillStyle = opts.background;
+    ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.strokeStyle = isLightBackground(opts.background) ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+
+    // 印刷可能領域（余白の内側）を破線で
+    const m = opts.margin;
+    if (m > 0 && size.width > m * 2 && size.height > m * 2) {
+      const ia = view.toScreen({ x: m, y: size.height - m });
+      const ib = view.toScreen({ x: size.width - m, y: m });
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = isLightBackground(opts.background) ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.30)';
+      ctx.strokeRect(ia.x, ia.y, ib.x - ia.x, ib.y - ia.y);
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * ビューポート 1 つ。**窓の矩形で切り取ってから**モデル空間を紙座標へ移して描く。
+   * 窓が複数あるとマスク（外側を塗りつぶす）では足りないので、`ctx.clip()` を使う。
+   */
+  private drawViewport(
+    doc: CadDocument,
+    vp: Viewport,
+    view: CadView,
+    colorCtx: ColorContext,
+    opts: LayoutRenderOptions,
+  ): number {
+    const ctx = this.ctx;
+    const corners = viewportCorners(vp).map((p) => view.toScreen(p));
+    let drawn = 0;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(corners[0]!.x, corners[0]!.y);
+    for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i]!.x, corners[i]!.y);
+    ctx.closePath();
+    ctx.clip();
+
+    // 窓に映る範囲のモデル図形だけを取り出して、紙座標へ移す
+    const extent = viewportModelExtent(vp);
+    for (const e of doc.visibleIn(extent)) {
+      const paperEntity = modelEntityToPaper(vp, e);
+      const highlight = opts.monochrome ? '#000000' : undefined;
+      // 窓の中の線種は**モデル側の尺度を縮尺で割った値**で刻む
+      // （紙の上での見た目が図面の縮尺どおりになる）
+      this.drawEntityWith(
+        paperEntity,
+        view,
+        doc,
+        colorCtx,
+        doc.lineTypeScale / Math.max(1e-9, vp.scaleDenominator),
+        highlight,
+        opts.lineWidthPxPerMm,
+      );
+      drawn++;
+    }
+    ctx.restore();
+
+    if (opts.viewportFrames === false) return drawn;
+
+    // 窓の枠（選択中は目立たせる）
+    ctx.save();
+    ctx.setLineDash(doc.selection.has(vp.id) ? [] : [6, 3]);
+    ctx.strokeStyle = doc.selection.has(vp.id)
+      ? opts.selectionColor
+      : isLightBackground(opts.background)
+        ? 'rgba(0,0,0,0.45)'
+        : 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = doc.selection.has(vp.id) ? 2 : 1;
+    this.strokePath(corners, true);
+    ctx.restore();
+    return drawn;
+  }
+
   private drawEntity(
     e: Entity,
     view: CadView,
@@ -132,6 +298,23 @@ export class Renderer {
     highlight?: string,
     dashedPreview = false,
     lineWidthPxPerMm?: number,
+  ): void {
+    this.drawEntityWith(e, view, doc, colorCtx, doc.lineTypeScale, highlight, lineWidthPxPerMm, dashedPreview);
+  }
+
+  /**
+   * 図形 1 つを描く。**線種尺度を外から渡す**ので、モデル空間（500）と
+   * 用紙空間（5）とビューポートの中（尺度で割った値）を同じ道で描ける。
+   */
+  private drawEntityWith(
+    e: Entity,
+    view: CadView,
+    doc: CadDocument,
+    colorCtx: ColorContext,
+    lineTypeScale: number,
+    highlight?: string,
+    lineWidthPxPerMm?: number,
+    dashedPreview = false,
   ): void {
     const ctx = this.ctx;
     const color = highlight ?? effectiveColor(e, colorCtx);
@@ -142,7 +325,7 @@ export class Renderer {
         ? lineWidthPx(e.lineWidth, this.dpr)
         : printLineWidthPx(e.lineWidth, lineWidthPxPerMm);
     ctx.setLineDash(
-      dashedPreview ? [4, 4] : dashArrayPx(effectiveLineStyle(e, doc.layers), doc.lineTypeScale, view.scale),
+      dashedPreview ? [4, 4] : dashArrayPx(effectiveLineStyle(e, doc.layers), lineTypeScale, view.scale),
     );
 
     switch (e.kind) {
