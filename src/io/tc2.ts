@@ -19,12 +19,14 @@
  * | `LineType`（`Continuous`…） | `lineStyle`（`solid`…） | 1 対 1 |
  * | `LineWeight`（mm） | `lineWidth`（mm） | そのまま |
  * | `LtScale` | `lineTypeScale` | 無ければ 500 |
+ * | `Project` / `Comments` / `Kyokai` / `MemoText` | `info` | 概要・注記文・境界コメント・メモ |
+ * | `MemoInk` | `info.memoInk` | **Windows Ink の ISF。解釈せず素通しで書き戻す** |
  *
  * ## 落ちる情報
  *
  * | 向き | 落ちるもの |
  * |---|---|
- * | tc2 → Web | ハッチ・ブロック(Insert)・画像・寸法（**件数を報告**）、測量データ（観測/座標/まわりけん/レベル/座標変換）、概要・コメント・メモ、用紙空間、グループ、ブロック定義 |
+ * | tc2 → Web | ハッチ・ブロック(Insert)・画像・寸法（**件数を報告**）、測量データ（観測/座標/まわりけん/レベル/座標変換）、用紙空間、グループ、ブロック定義 |
  * | Web → tc2 | 画層の**線種**（デスクトップ版の `LayerDto` は色と表示のみ）、用紙空間 |
  *
  * ## 閉じた連続線
@@ -42,6 +44,12 @@ import { deg } from '../core/geometry.js';
 import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '../core/layer.js';
 import { looksLikeZip, unzip, zip } from './zip.js';
+import {
+  emptyDocumentInfo,
+  isDocumentInfoEmpty,
+  isProjectEmpty,
+  type DocumentInfo,
+} from '../core/project-info.js';
 
 /** `.tc2` の中の JSON エントリ名（デスクトップ版 `CadDocument.Tc2Entry`）。 */
 export const TC2_ENTRY = 'TrCad2D.json';
@@ -70,11 +78,38 @@ export interface Tc2EntityDto {
   VAlign?: string | null;
 }
 
+/** 概要（デスクトップ版 `ProjectInfoDto`）。 */
+export interface Tc2ProjectDto {
+  Name?: string | null;
+  Code?: string | null;
+  Worker?: string | null;
+  Note?: string | null;
+}
+
+/** 注記文（デスクトップ版 `CommentSelDto`）。 */
+export interface Tc2CommentDto {
+  Key?: string | null;
+  Check?: boolean;
+  Text?: string | null;
+}
+
+/** 境界コメント（デスクトップ版 `KyokaiCommentDto`）。 */
+export interface Tc2KyokaiDto {
+  Name?: string | null;
+  Kind?: string | null;
+}
+
 export interface Tc2DocDto {
   Layers: Tc2LayerDto[];
   CurrentLayer: string;
   Entities: Tc2EntityDto[];
   LtScale?: number | null;
+  Project?: Tc2ProjectDto | null;
+  Comments?: Tc2CommentDto[] | null;
+  Kyokai?: Tc2KyokaiDto[] | null;
+  MemoText?: string | null;
+  /** 手書きメモ（Windows Ink の ISF を Base64 化）。**解釈せず素通しする。** */
+  MemoInk?: string | null;
   [key: string]: unknown; // 測量データなど、Web 版が使わない項目はそのまま無視する
 }
 
@@ -181,7 +216,8 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
     entities.push({ ...built, id: id++ } as Entity);
   }
 
-  // 図形以外で落ちるもの（利用者に伝えるため名前だけ拾う）
+  // 図形以外で落ちるもの（利用者に伝えるため名前だけ拾う）。
+  // **概要・コメント・境界コメント・メモは取り込むのでここには挙げない**
   const droppedSections: string[] = [];
   const SECTION_LABEL: Record<string, string> = {
     Obs: '観測データ',
@@ -189,13 +225,8 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
     Ken: 'まわりけん',
     Level: 'レベル',
     Transform: '座標変換',
-    Project: '概要',
-    Comments: 'コメント',
-    Kyokai: '境界コメント',
     Blocks: 'ブロック定義',
     Layouts: '用紙空間',
-    MemoText: 'メモ',
-    MemoInk: '手書きメモ',
   };
   for (const [key, label] of Object.entries(SECTION_LABEL)) {
     const v = dto[key];
@@ -206,17 +237,37 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   }
 
   const ltScale = typeof dto.LtScale === 'number' && dto.LtScale > 0 ? dto.LtScale : DEFAULT_LINETYPE_SCALE;
-  return {
-    json: {
-      format: 'tr-cad2w',
-      version: FILE_FORMAT_VERSION,
-      lineTypeScale: ltScale,
-      layers,
-      entities,
-    },
-    skipped,
-    droppedSections,
+  const json: DocumentJson = {
+    format: 'tr-cad2w',
+    version: FILE_FORMAT_VERSION,
+    lineTypeScale: ltScale,
+    layers,
+    entities,
   };
+  const info = tc2InfoToDocument(dto);
+  if (!isDocumentInfoEmpty(info)) json.info = info;
+  return { json, skipped, droppedSections };
+}
+
+/** `.tc2` の概要・注記文・境界コメント・メモ → Web 版の文書情報。 */
+export function tc2InfoToDocument(dto: Tc2DocDto): DocumentInfo {
+  const info = emptyDocumentInfo();
+  const p = dto.Project;
+  if (p) {
+    info.project = { name: p.Name ?? '', code: p.Code ?? '', worker: p.Worker ?? '', note: p.Note ?? '' };
+  }
+  for (const c of dto.Comments ?? []) {
+    if (!c) continue;
+    info.comments.push({ key: c.Key ?? '', checked: c.Check === true, text: c.Text ?? '' });
+  }
+  for (const k of dto.Kyokai ?? []) {
+    if (!k) continue;
+    info.kyokai.push({ name: k.Name ?? '', kind: k.Kind ?? '' });
+  }
+  info.memoText = dto.MemoText ?? '';
+  // 手書きメモは中身を見ない（Windows Ink の ISF。Web では描けない）
+  info.memoInk = dto.MemoInk ?? '';
+  return info;
 }
 
 function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntity | null {
@@ -298,12 +349,32 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     if (dto) entities.push(dto);
   }
 
-  return {
+  const out: Tc2DocDto = {
     Layers: layers,
     CurrentLayer: '0',
     Entities: entities,
     LtScale: json.lineTypeScale,
   };
+
+  const info = json.info;
+  if (info && !isDocumentInfoEmpty(info)) {
+    if (!isProjectEmpty(info.project)) {
+      out.Project = {
+        Name: info.project.name,
+        Code: info.project.code,
+        Worker: info.project.worker,
+        Note: info.project.note,
+      };
+    }
+    if (info.comments.length > 0) {
+      out.Comments = info.comments.map((c) => ({ Key: c.key, Check: c.checked, Text: c.text }));
+    }
+    if (info.kyokai.length > 0) out.Kyokai = info.kyokai.map((k) => ({ Name: k.name, Kind: k.kind }));
+    if (info.memoText !== '') out.MemoText = info.memoText;
+    // **読んだままを書き戻す。** Web では描けないが、消してはいけない
+    if (info.memoInk !== '') out.MemoInk = info.memoInk;
+  }
+  return out;
 }
 
 function toTc2Entity(e: Entity, layerColor: Map<string, number>): Tc2EntityDto | null {

@@ -157,8 +157,11 @@ describe('デスクトップ版 JSON の読込', () => {
         MemoText: 'メモ',
       } as Partial<Tc2DocDto>),
     );
-    expect(res.droppedSections).toEqual(expect.arrayContaining(['観測データ', '座標', 'メモ']));
+    expect(res.droppedSections).toEqual(expect.arrayContaining(['観測データ', '座標']));
     expect(res.droppedSections).not.toContain('レベル'); // 空配列は落ちたうちに入れない
+    // メモは取り込むので「落ちたもの」には出ない（#30 で対応）
+    expect(res.droppedSections).not.toContain('メモ');
+    expect(res.json.info?.memoText).toBe('メモ');
   });
 
   it('線種尺度（LtScale）を読む。無ければ 500', () => {

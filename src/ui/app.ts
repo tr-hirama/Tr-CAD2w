@@ -24,6 +24,8 @@ import {
   type Entity,
   type NewEntity,
 } from '../core/entity.js';
+import { STANDARD_COMMENTS, findStandardComment } from '../core/comments.js';
+import { KYOKAI_KINDS, fileNameBaseOf, isProjectEmpty } from '../core/project-info.js';
 import { DEFAULT_DRAW_ATTRS, DrawTool, TOOL_KEYS, TOOL_LABEL, promptFor, type DrawAttrs, type ToolName } from './tools.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import {
@@ -162,8 +164,20 @@ export class CadApp {
   }
 
   save(): void {
-    downloadText(defaultFileName(new Date()), serialize(this.doc.toJson()));
+    downloadText(this.saveNameOf(defaultFileName(new Date())), serialize(this.doc.toJson()));
     this.setStatus('図面を保存しました');
+  }
+
+  /**
+   * 保存名。**概要コード（無ければ現場名）があればそれを使う**
+   * （デスクトップ版が `GaiyoCD` を保存名の既定にしているのに合わせる）。
+   * 概要が空なら日時つきの既定名のまま。
+   */
+  private saveNameOf(fallback: string): string {
+    const base = fileNameBaseOf(this.doc.info.project);
+    if (base === null) return fallback;
+    const ext = fallback.slice(fallback.lastIndexOf('.'));
+    return `${base}${ext}`;
   }
 
   /** DXF（UTF-8 / R2007）で書き出す。 */
@@ -268,11 +282,110 @@ export class CadApp {
     }
     try {
       const bytes = await writeTc2(this.doc.toJson());
-      downloadBytes(defaultTc2FileName(new Date()), bytes, 'application/zip');
+      downloadBytes(this.saveNameOf(defaultTc2FileName(new Date())), bytes, 'application/zip');
       this.setStatus(`.tc2 で書き出しました（${this.doc.count} 図形・${bytes.length} バイト）`);
     } catch (err) {
       this.setStatus(`.tc2 を書き出せませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  // ---- 概要・注記文・境界コメント・メモ ------------------------------------
+
+  /** 概要（現場名・概要コード・作業者・備考）。**概要コードは保存名の既定にも使う。** */
+  editProject(): void {
+    const p = this.doc.info.project;
+    const name = window.prompt('現場名', p.name);
+    if (name === null) return;
+    const code = window.prompt('概要コード（保存名の既定になります）', p.code);
+    if (code === null) return;
+    const worker = window.prompt('作業者', p.worker);
+    if (worker === null) return;
+    const note = window.prompt('備考', p.note);
+    if (note === null) return;
+    this.doc.info.project = { name, code, worker, note };
+    this.setStatus(
+      isProjectEmpty(this.doc.info.project) ? '概要を空にしました' : `概要: ${name || '(現場名なし)'}／${code || '(コードなし)'}`,
+    );
+    this.updateTitle();
+  }
+
+  /**
+   * 標準注記文の選択。番号（`1,3,5` の形）で選ぶ。
+   * すでに選ばれているものは外れ、**編集済みの本文はそのまま残す**。
+   */
+  editComments(): void {
+    const checked = this.doc.info.comments.filter((c) => c.checked).map((c) => c.key);
+    const list = STANDARD_COMMENTS.map((c) => `${c.key}: ${c.summary.slice(0, 40)}`).join('\n');
+    const input = window.prompt(`入れる注記文の番号をカンマ区切りで\n\n${list}`, checked.join(','));
+    if (input === null) return;
+
+    const keys = input
+      .split(/[,、\s]+/)
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
+    const unknown = keys.filter((k) => !findStandardComment(k));
+    if (unknown.length > 0) {
+      this.setStatus(`知らない番号があります: ${unknown.join(', ')}`);
+      return;
+    }
+
+    // 編集済みの本文は残したいので、既存の項目を引き継ぐ
+    const existing = new Map(this.doc.info.comments.map((c) => [c.key, c]));
+    this.doc.info.comments = STANDARD_COMMENTS.filter((c) => keys.includes(c.key) || existing.has(c.key)).map((c) => {
+      const prev = existing.get(c.key);
+      return { key: c.key, checked: keys.includes(c.key), text: prev?.text ?? c.text };
+    });
+    this.setStatus(`注記文を ${keys.length} 件選びました`);
+  }
+
+  /** 選んだ注記文の本文を書き換える（`|` が改行）。 */
+  editCommentText(): void {
+    const chosen = this.doc.info.comments.filter((c) => c.checked);
+    if (chosen.length === 0) {
+      this.setStatus('先に「注記文」で番号を選んでください');
+      return;
+    }
+    const keyText = window.prompt(`本文を直す注記文の番号（${chosen.map((c) => c.key).join(',')}）`, chosen[0]!.key);
+    if (keyText === null) return;
+    const target = this.doc.info.comments.find((c) => c.key === keyText.trim());
+    if (!target) {
+      this.setStatus(`選ばれていない番号です: ${keyText}`);
+      return;
+    }
+    const text = window.prompt('本文（| が改行）', target.text);
+    if (text === null) return;
+    target.text = text;
+    this.setStatus(`注記文 ${target.key} の本文を直しました`);
+  }
+
+  /** 境界コメント（境界番号と境界標の種類）を 1 件足す。 */
+  addKyokaiComment(): void {
+    const name = window.prompt('境界番号', '');
+    if (name === null || name.trim() === '') return;
+    const kind = window.prompt(`境界標の種類\n（${KYOKAI_KINDS.join(' / ')}）`, KYOKAI_KINDS[0]!);
+    if (kind === null) return;
+    this.doc.info.kyokai.push({ name: name.trim(), kind: kind.trim() });
+    this.setStatus(`境界コメントを足しました（計 ${this.doc.info.kyokai.length} 件）`);
+  }
+
+  /** メモ（テキスト）。**手書きメモは Web で描けないので触らない。** */
+  editMemo(): void {
+    const text = window.prompt('メモ', this.doc.info.memoText);
+    if (text === null) return;
+    this.doc.info.memoText = text;
+    const ink = this.doc.info.memoInk;
+    this.setStatus(
+      ink === ''
+        ? 'メモを更新しました'
+        : `メモを更新しました（手書きメモ ${Math.round(ink.length / 1024)}KB はそのまま保ちます）`,
+    );
+  }
+
+  /** 概要を画面のタイトルへ出す（デスクトップ版はタイトルバーに出す）。 */
+  private updateTitle(): void {
+    const p = this.doc.info.project;
+    const label = [p.code, p.name].filter((s) => s !== '').join(' ');
+    document.title = label === '' ? 'Tr-CAD2w' : `${label} - Tr-CAD2w`;
   }
 
   newDocument(): void {
@@ -631,6 +744,21 @@ export class CadApp {
           break;
         case 'print':
           this.openPrintDialog();
+          break;
+        case 'project':
+          this.editProject();
+          break;
+        case 'comments':
+          this.editComments();
+          break;
+        case 'comment-text':
+          this.editCommentText();
+          break;
+        case 'kyokai':
+          this.addKyokaiComment();
+          break;
+        case 'memo':
+          this.editMemo();
           break;
         case 'undo':
           this.undo();
