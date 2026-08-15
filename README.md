@@ -32,6 +32,7 @@
 - **表示**: ホイールズーム（カーソル固定）・中／右ドラッグでパン・全体表示・等倍・背景色切替・グリッド
 - **ファイル**: `.tc2w`（JSON）で保存・読込。**DXF の読込**（`LINE` / `CIRCLE` / `ARC` / `POINT` / `LWPOLYLINE` / `POLYLINE`+`VERTEX` / `TEXT` / `MTEXT`、色 `62`・`420` ／画層 `8` ／線種 `6` ／線幅 `370` ／`$LTSCALE`）。**文字コードは BOM → `$DWGCODEPAGE` → UTF-8 妥当性の順で自動判定**（Shift-JIS の日本語も化けない）
 - **DXF の書出**（UTF-8 / R2007）: 図形・色（`420` で厳密＋`62` 併記）・画層・線種（`LTYPE` 定義つき）・線幅・`$LTSCALE` を出す。矩形は閉じた `LWPOLYLINE`、1行の文字は `TEXT`、複数行は `MTEXT`
+- **Shift-JIS（ANSI_932）の DXF 書出**: 旧 AutoCAD / ZWCAD 向けに `DXF書出SJIS` で R2000（AC1015）＋ `$DWGCODEPAGE=ANSI_932` を出す。**変換表は持たず、ブラウザ標準の `TextDecoder(shift_jis)` から実行時に組む**ので実行時依存は増えない。Shift-JIS に無い文字は `?` になり、**落ちた文字を画面に出す**
 - **デスクトップ版の `.tc2` と相互運用**: 読込・書出とも対応（下記の表のとおり一部の情報は落ちます）。ZIP の圧縮・伸長はブラウザ標準の `CompressionStream` / `DecompressionStream` を使うので**実行時依存は増えていません**
 - **概要・注記文・境界コメント・メモ**: 現場名 / 概要コード / 作業者 / 備考、デスクトップ版と同じ**標準注記文 40 件**からの選択と本文の編集、境界番号と境界標の種類、メモ。**概要コード（無ければ現場名）が保存名の既定**になります。**手書きメモ（Windows Ink の ISF）は Web で描けないので、中身を解釈せずそのまま保って書き戻します**（Web で開いて保存しても消えません）
 - **まわりけん（境界辺長）**: `.tc2` の `Ken` / `Keisanten` を読み、サイドバーに一覧で出します（**表示だけ**。入力・照合は行いません）。**周長は境界が `K1` からの連番で揃っているときだけ**出し、欠番があれば理由を添えて出しません（欠けた辺のぶん短い値が出て、正しく見えてしまうため）
@@ -64,7 +65,7 @@
 | `S` `L` `R` `C` `A` `P` `D` `T` | 選択 / 線 / 矩形 / 円 / 円弧 / 連続線 / 点 / 文字 |
 | ツールバーの **寸法** / **半径** / **直径** / **角度** | 直線寸法 / 半径寸法 / 直径寸法 / 角度寸法 |
 | `F2` / 寸法をダブルクリック | 寸法値を手で書き換える（空欄＝自動計測値） |
-| ツールバーの **DXF書出** / **.tc2書出** | DXF（UTF-8 / R2007）/ デスクトップ版の .tc2 で書き出す |
+| ツールバーの **DXF書出** / **DXF書出SJIS** / **.tc2書出** | DXF（UTF-8 / R2007）/ DXF（Shift-JIS / R2000。旧 CAD 向け）/ デスクトップ版の .tc2 で書き出す |
 | ツールバーの **ハッチ** / **柄** | 閉じた図形を塗る / 塗りのパターンを切り替える |
 | ツールバーの **ブロック読込** / **ブロック挿入** / **画像** | 別図面をブロックとして読む / 置く / 画像を配置する |
 | ツールバーの **概要** / **注記文** / **注記文の編集** / **境界コメント** / **メモ** | 図面に付ける文書情報を編集する |
@@ -122,7 +123,8 @@ npm run build
 | `src/core/snap.ts` | オブジェクトスナップ・グリッド吸着・交点計算 |
 | `src/core/file.ts` | `.tc2w` の入出力（保存ダイアログ・ファイル選択。**読込は必ずバイト列から入る**） |
 | `src/io/dxf.ts` | DXF 読込（文字コード自動判定・グループコードの解釈・ACI 色・線種名の対応） |
-| `src/io/dxf-write.ts` | DXF 書出（UTF-8 / R2007。**属性の対応は往復で一致するように決めてある**） |
+| `src/io/dxf-write.ts` | DXF 書出（UTF-8 / R2007 と Shift-JIS / R2000。**属性の対応は往復で一致するように決めてある**） |
+| `src/io/shift-jis.ts` | Shift-JIS への符号化。**表は `TextDecoder` から実行時に組む**（読み側と必ず一致する） |
 | `src/io/zip.ts` | 最小限の ZIP 読み書き（CRC32・deflate はブラウザ標準の Stream API） |
 | `src/io/tc2.ts` | デスクトップ版 `.tc2` との相互運用（DocDto ⇔ DocumentJson の対応） |
 | `src/core/layout.ts` | 用紙空間（レイアウト・ビューポート）。モデル⇔紙の座標変換と**図形ごと紙へ映す変換** |
@@ -140,7 +142,7 @@ npm run build
 
 | マイルストーン | issue |
 |---|---|
-| [M1 DXF入出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/1) | ~~[#1 読込](https://github.com/tr-hirama/Tr-CAD2w/issues/1)~~ / ~~[#2 書出（UTF-8）](https://github.com/tr-hirama/Tr-CAD2w/issues/2)~~ / [#3 往復の検証](https://github.com/tr-hirama/Tr-CAD2w/issues/3) / [#4 Shift-JIS 出力の判断](https://github.com/tr-hirama/Tr-CAD2w/issues/4) |
+| [M1 DXF入出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/1) | ~~[#1 読込](https://github.com/tr-hirama/Tr-CAD2w/issues/1)~~ / ~~[#2 書出（UTF-8）](https://github.com/tr-hirama/Tr-CAD2w/issues/2)~~ / ~~[#3 往復の検証](https://github.com/tr-hirama/Tr-CAD2w/issues/3)~~ / ~~[#4 Shift-JIS 出力](https://github.com/tr-hirama/Tr-CAD2w/issues/4)~~ |
 | [M2 編集操作](https://github.com/tr-hirama/Tr-CAD2w/milestone/2) | [#5 トリム・延長・オフセット](https://github.com/tr-hirama/Tr-CAD2w/issues/5) / [#6 フィレット・面取り](https://github.com/tr-hirama/Tr-CAD2w/issues/6) / [#7 回転・拡縮・グループ・クリップボード](https://github.com/tr-hirama/Tr-CAD2w/issues/7) |
 | [M3 測量](https://github.com/tr-hirama/Tr-CAD2w/milestone/3) | [#8 座標入力・CSV](https://github.com/tr-hirama/Tr-CAD2w/issues/8) / [#9 観測ファイル取込](https://github.com/tr-hirama/Tr-CAD2w/issues/9) / [#10 自動結線](https://github.com/tr-hirama/Tr-CAD2w/issues/10) / [#11 トラバース・三斜求積](https://github.com/tr-hirama/Tr-CAD2w/issues/11) |
 | [M4 図面表現と出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/4) | ~~[#12 寸法線](https://github.com/tr-hirama/Tr-CAD2w/issues/12)~~ / ~~[#13 ハッチ・ブロック・画像](https://github.com/tr-hirama/Tr-CAD2w/issues/13)~~ / ~~[#14 印刷・PDF・用紙空間](https://github.com/tr-hirama/Tr-CAD2w/issues/14)~~ / ~~[#15 `.tc2` 相互運用](https://github.com/tr-hirama/Tr-CAD2w/issues/15)~~ / ~~[#16 WebGL 描画](https://github.com/tr-hirama/Tr-CAD2w/issues/16)~~ / ~~[#22 用紙空間 UI](https://github.com/tr-hirama/Tr-CAD2w/issues/22)~~ |
