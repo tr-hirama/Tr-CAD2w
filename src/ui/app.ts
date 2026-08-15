@@ -26,6 +26,7 @@ import {
 } from '../core/entity.js';
 import { DEFAULT_DRAW_ATTRS, DrawTool, TOOL_KEYS, TOOL_LABEL, promptFor, type DrawAttrs, type ToolName } from './tools.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
+import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
 import {
   decodeUtf8,
   defaultFileName,
@@ -307,6 +308,30 @@ export class CadApp {
   snapshot(): string {
     this.drawNow();
     return this.renderer.toDataUrl();
+  }
+
+  /**
+   * 描画の計測（開発者コンソールから `TrCad2w.bench()`）。
+   *
+   * **WebGL 化の可否はこの数値を見てから決める**（issue #16）。
+   * いまの図面は壊さない（計測用の図面を別に作って描く）。
+   */
+  bench(count = 30_000): BenchResult {
+    const result = runRenderBench(
+      this.renderer,
+      { width: this.view.width, height: this.view.height },
+      { count, render: { background: this.render.background, darkBoost: this.render.darkBoost } },
+    );
+    // 計測で画面が計測用の図面になっているので、元の図面を描き直す
+    this.markDirty();
+    this.drawNow();
+    // eslint-disable-next-line no-console -- 計測結果はコンソールで見るためのもの
+    console.log(formatBenchResult(result));
+    this.setStatus(
+      `計測: ${result.entities.toLocaleString()} 図形 → ` +
+        result.cases.map((c) => `${c.name} ${c.msMedian}ms`).join(' / '),
+    );
+    return result;
   }
 
   // ---- 入力 --------------------------------------------------------------
