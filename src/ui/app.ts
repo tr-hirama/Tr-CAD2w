@@ -90,6 +90,7 @@ import {
 import { readDxfBytes } from '../io/dxf.js';
 import { defaultDxfFileName, documentToDxf, documentToDxfBytes } from '../io/dxf-write.js';
 import { defaultTc2FileName, readTc2, writeTc2 } from '../io/tc2.js';
+import { defaultReportFileName, writeSurveyReport } from '../survey/report.js';
 import { looksLikeZip } from '../io/zip.js';
 import { PrintDialog } from './print-dialog.js';
 import { DEFAULT_PRINT, type PrintSettings } from '../print/paper.js';
@@ -389,6 +390,29 @@ export class CadApp {
       this.setStatus(`.tc2 で書き出しました（${this.doc.count} 図形・${bytes.length} バイト）`);
     } catch (err) {
       this.setStatus(`.tc2 を書き出せませんでした: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * レベル（水準）の帳票を Excel（`.xlsx`）で書き出す（issue #29）。
+   *
+   * **図形ではなくレベルの入力が要る**ので、図形数ではなく `doc.level` を見る。
+   */
+  async exportReport(): Promise<void> {
+    if (this.doc.level.length === 0) {
+      this.setStatus('レベル（水準）が入っていません（.tc2 を読むと入ります）');
+      return;
+    }
+    try {
+      const bytes = await writeSurveyReport(this.doc.level);
+      downloadBytes(
+        defaultReportFileName(new Date()),
+        bytes,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+      this.setStatus(`測量帳票を書き出しました（レベル ${this.doc.level.length} 行・${bytes.length} バイト）`);
+    } catch (err) {
+      this.setStatus(`測量帳票を書き出せませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1433,6 +1457,9 @@ export class CadApp {
           break;
         case 'export-tc2':
           void this.exportTc2();
+          break;
+        case 'export-report':
+          void this.exportReport();
           break;
         case 'print':
           this.openPrintDialog();
