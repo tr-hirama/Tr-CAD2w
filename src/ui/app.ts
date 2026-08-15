@@ -1629,13 +1629,10 @@ export class CadApp {
       `描画 ${this.lastStats.drawn} (${this.lastStats.ms.toFixed(1)}ms)`,
     ];
     if (sel === 1) {
-      const e = this.doc.selectedEntities()[0]!;
-      const len = entityLength(e);
-      const area = entityArea(e);
-      const detail = [`種別 ${e.kind}`];
-      if (len > 0) detail.push(`長さ ${len.toFixed(1)}mm`);
-      if (area > 0) detail.push(`面積 ${(area / 1_000_000).toFixed(3)}㎡`);
-      parts.push(detail.join('  '));
+      // **いま開いている空間から拾う。** モデル空間だけを見ると、用紙空間で
+      // 図形を選んだときに undefined を掴んで落ちる（issue #40）
+      const detail = selectionDetail(this.selectedInSpace()[0], this.selectedViewport());
+      if (detail !== '') parts.push(detail);
     }
     this.ui.info.textContent = parts.join('  |  ') + snapText;
   }
@@ -1705,6 +1702,28 @@ export function base64OfBytes(bytes: Uint8Array): string {
 /** 縮尺の分母の表示（`1:200` / `1:2.5`）。整数はそのまま、端数だけ小数で見せる。 */
 export function formatDenominator(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+/**
+ * 選択が 1 つのときに情報行へ出す説明（issue #40）。
+ *
+ * **図形とビューポートは別物。** ビューポートは `Entity` ではないので
+ * `entityLength` / `entityArea` に渡してはいけない。どちらも無ければ空文字。
+ */
+export function selectionDetail(entity: Entity | undefined, viewport: Viewport | null): string {
+  if (entity) {
+    const len = entityLength(entity);
+    const area = entityArea(entity);
+    const detail = [`種別 ${entity.kind}`];
+    if (len > 0) detail.push(`長さ ${len.toFixed(1)}mm`);
+    if (area > 0) detail.push(`面積 ${(area / 1_000_000).toFixed(3)}㎡`);
+    return detail.join('  ');
+  }
+  if (viewport) {
+    return `種別 ビューポート  縮尺 1:${formatDenominator(viewport.scaleDenominator)}  回転 ${Math.round(deg(viewport.rotation))}°`;
+  }
+  // 選択はあるが、いま開いている空間には無い（別の空間の図形）
+  return '';
 }
 
 /** 閉じた点列の**辺の近く**か（ビューポートの枠を掴むのに使う）。 */
