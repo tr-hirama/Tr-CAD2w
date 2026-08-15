@@ -84,3 +84,72 @@ describe('クエリ範囲は索引の範囲でクリップする（issue #16）'
     expect(index.query({ minX: 0, minY: 0, maxX: 20, maxY: 20 })).toEqual([]);
   });
 });
+
+/**
+ * 点だけの図面でも操作が返ってくること（issue #36）。
+ *
+ * 点の外接矩形は幅も高さも 0 なので、平均の大きさだけでセル幅を決めると
+ * 下限（1e-6）に落ちる。すると `query` の二重ループが天文学的な回数になり、
+ * タブごと固まる。**散らばりからも下限を作る**ことで防ぐ。
+ */
+describe('点だけの図面（issue #36）', () => {
+  function points(n: number, spread: number): Indexed[] {
+    // 決まった値でばらまく（乱数を使わないので結果が毎回同じ）
+    return Array.from({ length: n }, (_, i) => {
+      const x = ((i * 7919) % 1000) * (spread / 1000);
+      const y = ((i * 104_729) % 1000) * (spread / 1000);
+      return { id: i + 1, bounds: { minX: x, minY: y, maxX: x, maxY: y } };
+    });
+  }
+
+  it('100m 四方に散らばった点 1000 個でもセル幅が潰れない', () => {
+    const idx = new SpatialIndex(points(1000, 100_000));
+    // 1e-6 に落ちていたら 10 桁違う
+    expect(idx.cellSize).toBeGreaterThan(1);
+  });
+
+  it('点 1000 個の query が即座に返る', () => {
+    const idx = new SpatialIndex(points(1000, 100_000));
+    const t0 = Date.now();
+    const hit = idx.query({ minX: 0, minY: 0, maxX: 100_000, maxY: 100_000 });
+    const ms = Date.now() - t0;
+    expect(hit.length).toBe(1000);
+    // 直っていなければ返ってこない。10 桁の余裕をみて 1 秒で切る
+    expect(ms).toBeLessThan(1000);
+  });
+
+  it('狭い範囲の query も即座に返る', () => {
+    const idx = new SpatialIndex(points(1000, 100_000));
+    const t0 = Date.now();
+    idx.query({ minX: 0, minY: 0, maxX: 10, maxY: 10 });
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it('同じ座標に重なった点だけでも返る', () => {
+    const same: Indexed[] = Array.from({ length: 500 }, (_, i) => ({
+      id: i + 1,
+      bounds: { minX: 4, minY: 8, maxX: 4, maxY: 8 },
+    }));
+    const idx = new SpatialIndex(same);
+    const t0 = Date.now();
+    const hit = idx.query({ minX: 0, minY: 0, maxX: 8, maxY: 16 });
+    expect(hit.length).toBe(500);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it('点 1 個でも返る', () => {
+    const idx = new SpatialIndex([{ id: 1, bounds: { minX: 4, minY: 8, maxX: 4, maxY: 8 } }]);
+    expect(idx.query({ minX: 0, minY: 0, maxX: 8, maxY: 16 })).toEqual([1]);
+  });
+
+  /** 線や矩形がある図面では、平均の大きさが勝つので今までと同じ値になる。 */
+  it('大きさのある図形が混ざればセル幅は平均由来のまま', () => {
+    const lines: Indexed[] = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      bounds: { minX: 0, minY: i, maxX: 1000, maxY: i },
+    }));
+    const idx = new SpatialIndex(lines);
+    // 平均の大きさ 1000 × 2 = 2000
+    expect(idx.cellSize).toBe(2000);
+  });
+});

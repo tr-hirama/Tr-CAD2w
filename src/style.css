@@ -420,3 +420,40 @@ body {
   touch-action: none;
   background: var(--bg);
 }
+
+/* レベル（水準）。表示だけ。issue #29 */
+#level-panel .level-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+#level-panel .level-table th {
+  text-align: left;
+  font-weight: 600;
+  opacity: 0.7;
+  padding: 1px 4px 1px 0;
+}
+#level-panel .level-table td {
+  padding: 1px 4px 1px 0;
+  white-space: nowrap;
+}
+/* 数値の列は右揃えにして桁を比べやすくする */
+#level-panel .level-table td:not(:first-child),
+#level-panel .level-table th:not(:first-child) {
+  text-align: right;
+}
+/* 器械を据えた行（後視のある行）は区切りとして目立たせる */
+#level-panel .level-table tr.instrument td {
+  border-top: 1px solid var(--border);
+  font-weight: 600;
+}
+#level-panel .level-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+#level-panel .level-note.warn {
+  opacity: 1;
+  color: #c0392b;
+}
