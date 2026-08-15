@@ -56,6 +56,7 @@ import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '../core/layer.js';
 import { looksLikeZip, unzip, zip } from './zip.js';
 import { DEFAULT_POINT_STYLE, normalizeMode } from '../core/point-style.js';
+import { normalizeLevelRows, type LevelRow } from '../survey/level.js';
 import {
   emptyDocumentInfo,
   isDocumentInfoEmpty,
@@ -124,6 +125,20 @@ export interface Tc2CommentDto {
   Text?: string | null;
 }
 
+/**
+ * レベル（水準）（デスクトップ版 `SurveyLevelDto(Name, BS, FS, GH, Remarks, TP, CK)`）。
+ * **すべて文字列**。空欄・非数値・`[点番]` 参照が混ざるので、解釈は `survey/level.ts` が持つ。
+ */
+export interface Tc2LevelDto {
+  Name?: string | null;
+  BS?: string | null;
+  FS?: string | null;
+  GH?: string | null;
+  Remarks?: string | null;
+  TP?: string | null;
+  CK?: string | null;
+}
+
 /** 境界コメント（デスクトップ版 `KyokaiCommentDto`）。 */
 export interface Tc2KyokaiDto {
   Name?: string | null;
@@ -143,6 +158,8 @@ export interface Tc2DocDto {
   Project?: Tc2ProjectDto | null;
   Comments?: Tc2CommentDto[] | null;
   Kyokai?: Tc2KyokaiDto[] | null;
+  /** レベル（水準）（0 件のときデスクトップ版は出さない）。 */
+  Level?: Tc2LevelDto[] | null;
   MemoText?: string | null;
   /** 手書きメモ（Windows Ink の ISF を Base64 化）。**解釈せず素通しする。** */
   MemoInk?: string | null;
@@ -285,13 +302,12 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   }
 
   // 図形以外で落ちるもの（利用者に伝えるため名前だけ拾う）。
-  // **概要・コメント・境界コメント・メモは取り込むのでここには挙げない**
+  // **概要・コメント・境界コメント・メモ・レベルは取り込むのでここには挙げない**
   const droppedSections: string[] = [];
   const SECTION_LABEL: Record<string, string> = {
     Obs: '観測データ',
     Coord: '座標',
     Ken: 'まわりけん',
-    Level: 'レベル',
     Transform: '座標変換',
     Blocks: 'ブロック定義',
     Layouts: '用紙空間',
@@ -334,6 +350,8 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   if (blocks.length > 0) json.blocks = blocks;
   const info = tc2InfoToDocument(dto);
   if (!isDocumentInfoEmpty(info)) json.info = info;
+  const level = tc2LevelToDocument(dto);
+  if (level.length > 0) json.level = level;
   return { json, skipped, droppedSections };
 }
 
@@ -356,6 +374,21 @@ export function tc2InfoToDocument(dto: Tc2DocDto): DocumentInfo {
   // 手書きメモは中身を見ない（Windows Ink の ISF。Web では描けない）
   info.memoInk = dto.MemoInk ?? '';
   return info;
+}
+
+/** `.tc2` のレベル → Web 版の行。**文字列のまま持つ**（解釈は `survey/level.ts`）。 */
+export function tc2LevelToDocument(dto: Tc2DocDto): LevelRow[] {
+  return (dto.Level ?? [])
+    .filter((l): l is Tc2LevelDto => l !== null && l !== undefined)
+    .map((l) => ({
+      name: l.Name ?? '',
+      bs: l.BS ?? '',
+      fs: l.FS ?? '',
+      gh: l.GH ?? '',
+      remarks: l.Remarks ?? '',
+      tp: l.TP ?? '',
+      ck: l.CK ?? '',
+    }));
 }
 
 function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntity | null {
@@ -528,6 +561,20 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     if (info.memoText !== '') out.MemoText = info.memoText;
     // **読んだままを書き戻す。** Web では描けないが、消してはいけない
     if (info.memoInk !== '') out.MemoInk = info.memoInk;
+  }
+
+  const level = normalizeLevelRows(json.level);
+  // 0 件のときデスクトップ版は Level を出さない。合わせる
+  if (level.length > 0) {
+    out.Level = level.map((r) => ({
+      Name: r.name,
+      BS: r.bs,
+      FS: r.fs,
+      GH: r.gh,
+      Remarks: r.remarks,
+      TP: r.tp,
+      CK: r.ck,
+    }));
   }
   return out;
 }

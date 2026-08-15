@@ -72,6 +72,7 @@ import {
   type ToolName,
 } from './tools.js';
 import { ErrorGuard } from './error-guard.js';
+import { calcLevel, summarizeLevel } from '../survey/level.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
 import {
@@ -133,6 +134,9 @@ export class CadApp {
       layerList: HTMLElement;
       /** 空間（モデル / レイアウト）の切替タブ。 */
       layoutTabs: HTMLElement;
+      /** レベル（水準）の枠（無い図面では隠す）。 */
+      levelPanel: HTMLElement;
+      levelList: HTMLElement;
     },
   ) {
     this.renderer = new Renderer(canvas);
@@ -144,6 +148,7 @@ export class CadApp {
     this.bindToolbar();
     this.bindDragAndDrop();
     this.buildLayerList();
+    this.buildLevelList();
     this.buildLayoutTabs();
 
     const ro = new ResizeObserver(() => this.handleResize());
@@ -321,6 +326,7 @@ export class CadApp {
         this.setStatus(`${picked.name} を開きました（${this.doc.count} 図形）`);
       }
       this.buildLayerList();
+      this.buildLevelList();
       this.zoomFit();
     } catch (err) {
       this.setStatus(`${picked.name} を開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
@@ -1463,6 +1469,63 @@ export class CadApp {
     }
   }
 
+  /**
+   * レベル（水準）の一覧（**表示だけ**。issue #29 の 1/3）。
+   *
+   * `.tc2` から読んだ入力を器高式で解いて、測点・後視・前視・地盤高を並べる。
+   * **解けなかった行は数と理由を出す**（黙って消すと、入力の取りこぼしに気づけない）。
+   * レベルが無い図面では枠ごと隠す。
+   */
+  private buildLevelList(): void {
+    const panel = this.ui.levelPanel;
+    const host = this.ui.levelList;
+    if (!panel || !host) return;
+    panel.hidden = this.doc.level.length === 0;
+    if (panel.hidden) return;
+
+    host.textContent = '';
+    const calc = calcLevel(this.doc.level);
+
+    const t = document.createElement('table');
+    t.className = 'level-table';
+    const head = document.createElement('tr');
+    for (const label of ['測点', '後視', '前視', '地盤高']) {
+      const th = document.createElement('th');
+      th.textContent = label;
+      head.append(th);
+    }
+    t.append(head);
+    for (const row of calc.rows) {
+      const tr = document.createElement('tr');
+      if (row.kind === 'instrument') tr.className = 'instrument';
+      const cells = [row.name, fmt(row.bs), fmt(row.fs), fmt(row.gh)];
+      for (const v of cells) {
+        const td = document.createElement('td');
+        td.textContent = v;
+        tr.append(td);
+      }
+      t.append(tr);
+    }
+    host.append(t);
+
+    const s = summarizeLevel(calc);
+    const sum = document.createElement('p');
+    sum.className = 'level-note';
+    sum.textContent = `後視計 ${fmt(s.totalBs)} ／ 前視計 ${fmt(s.totalFs)} ／ 高低差 ${fmt(s.difference)}（${s.resolved} 点）`;
+    host.append(sum);
+
+    if (calc.unresolved.length > 0) {
+      const warn = document.createElement('p');
+      warn.className = 'level-note warn';
+      const first = calc.unresolved[0]!;
+      warn.textContent =
+        calc.unresolved.length === 1
+          ? `解けない行が 1 件: ${first.name} — ${first.reason}`
+          : `解けない行が ${calc.unresolved.length} 件（例: ${first.name} — ${first.reason}）`;
+      host.append(warn);
+    }
+  }
+
   private buildLayerList(): void {
     const host = this.ui.layerList;
     host.textContent = '';
@@ -1682,6 +1745,13 @@ export function base64OfBytes(bytes: Uint8Array): string {
 /** 縮尺の分母の表示（`1:200` / `1:2.5`）。整数はそのまま、端数だけ小数で見せる。 */
 export function formatDenominator(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+/** レベルの数値表示（m）。`null` は空欄。端数は 3 桁まで。 */
+function fmt(v: number | null): string {
+  if (v === null || !Number.isFinite(v)) return '';
+  // 桁を揃える。帳票では 1.5 と 11.25 が並ぶより 1.500 / 11.250 の方が比べやすい
+  return v.toFixed(3);
 }
 
 /** 閉じた点列の**辺の近く**か（ビューポートの枠を掴むのに使う）。 */
