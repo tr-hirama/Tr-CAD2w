@@ -13,20 +13,46 @@
 
 import { CadView } from '../core/view.js';
 import { CadDocument } from '../core/document.js';
-import { Renderer, DEFAULT_RENDER, type RenderOptions, type RenderStats } from '../render/renderer.js';
+import {
+  Renderer,
+  DEFAULT_RENDER,
+  paperExtentOf,
+  type RenderOptions,
+  type RenderStats,
+} from '../render/renderer.js';
+import {
+  fitScaleDenominator,
+  makeLayout,
+  makeViewport,
+  viewportCorners,
+  type LayoutSpace,
+  type Viewport,
+} from '../core/layout.js';
 import { DEFAULT_SNAP, SNAP_LABEL, applyGrid, findSnap, type SnapResult, type SnapSettings } from '../core/snap.js';
-import { aabbFromCorners, dist, sub, vec, type Vec2 } from '../core/geometry.js';
+import { aabbFromCorners, deg, dist, distToSegment, rad, sub, vec, type Vec2 } from '../core/geometry.js';
 import {
   cloneEntity,
   entityArea,
   entityLength,
+  hitTest,
   translateEntity,
+  type DimEntity,
   type Entity,
   type NewEntity,
 } from '../core/entity.js';
 import { POINT_MODE_CHOICES, normalizeMode, pointModeLabel } from '../core/point-style.js';
-import { DEFAULT_DRAW_ATTRS, DrawTool, TOOL_KEYS, TOOL_LABEL, promptFor, type DrawAttrs, type ToolName } from './tools.js';
+import {
+  DEFAULT_DRAW_ATTRS,
+  DrawTool,
+  TOOL_KEYS,
+  TOOL_LABEL,
+  buildRadialDim,
+  promptFor,
+  type DrawAttrs,
+  type ToolName,
+} from './tools.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
+import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
 import {
   decodeUtf8,
   defaultFileName,
@@ -84,6 +110,8 @@ export class CadApp {
       status: HTMLElement;
       info: HTMLElement;
       layerList: HTMLElement;
+      /** 空間（モデル / レイアウト）の切替タブ。 */
+      layoutTabs: HTMLElement;
     },
   ) {
     this.renderer = new Renderer(canvas);
@@ -92,6 +120,7 @@ export class CadApp {
     this.bindToolbar();
     this.bindDragAndDrop();
     this.buildLayerList();
+    this.buildLayoutTabs();
 
     const ro = new ResizeObserver(() => this.handleResize());
     ro.observe(canvas.parentElement ?? canvas);
@@ -116,6 +145,14 @@ export class CadApp {
   }
 
   zoomFit(): void {
+    const layout = this.activeLayout();
+    if (layout) {
+      // 用紙空間は「紙が画面に収まる」ことを全体表示とする
+      const size = paperExtentOf(layout);
+      this.view.zoomToFit({ minX: 0, minY: 0, maxX: size.width, maxY: size.height });
+      this.markDirty();
+      return;
+    }
     const b = this.doc.bounds();
     if (b.minX <= b.maxX) this.view.zoomToFit(b);
     else {
@@ -138,6 +175,20 @@ export class CadApp {
 
   deleteSelection(): void {
     if (this.doc.selection.size === 0) return;
+    const layout = this.activeLayout();
+    if (layout) {
+      // 用紙空間では、そのレイアウトの図形とビューポートを消す
+      this.doc.beginEdit();
+      const before = layout.entities.length + layout.viewports.length;
+      const target = this.activeLayout()!;
+      target.entities = target.entities.filter((e) => !this.doc.selection.has(e.id));
+      target.viewports = target.viewports.filter((v) => !this.doc.selection.has(v.id));
+      const n = before - (target.entities.length + target.viewports.length);
+      this.doc.selection.clear();
+      this.setStatus(`${n} 個削除しました`);
+      this.markDirty();
+      return;
+    }
     this.doc.beginEdit();
     const n = this.doc.remove([...this.doc.selection]);
     this.setStatus(`${n} 個削除しました`);
@@ -156,7 +207,7 @@ export class CadApp {
 
   selectAll(): void {
     this.doc.selection.clear();
-    for (const e of this.doc.entities) {
+    for (const e of this.spaceEntities()) {
       if (this.doc.layers.isVisible(e.layer)) this.doc.selection.add(e.id);
     }
     this.markDirty();
@@ -187,6 +238,8 @@ export class CadApp {
     this.printDialog = new PrintDialog(
       {
         doc: this.doc,
+        // 用紙空間を開いていれば、そのレイアウトをそのまま 1 ページとして刷る
+        activeLayout: () => this.activeLayout(),
         onSettingsChange: (s) => (this.printSettings = s),
         onClose: () => (this.printDialog = null),
       },
@@ -301,6 +354,220 @@ export class CadApp {
     this.markDirty();
   }
 
+  // ---- 用紙空間（レイアウト） --------------------------------------------
+
+  /**
+   * いま開いている空間。`null` はモデル空間、数値は `doc.layouts` の位置。
+   * **用紙空間ではワールドが「紙 mm・原点は紙の左下」に変わる。**
+   */
+  private layoutIndex: number | null = null;
+
+  activeLayout(): LayoutSpace | null {
+    if (this.layoutIndex === null) return null;
+    return this.doc.layouts[this.layoutIndex] ?? null;
+  }
+
+  get spaceName(): string {
+    return this.activeLayout()?.name ?? 'モデル';
+  }
+
+  /** モデル空間（`null`）／レイアウトを切り替える。 */
+  switchSpace(index: number | null): void {
+    if (index !== null && !this.doc.layouts[index]) return;
+    this.layoutIndex = index;
+    this.doc.selection.clear();
+    this.tool.reset();
+    this.moveBase = null;
+    this.zoomFit();
+    this.buildLayoutTabs();
+    this.setStatus(index === null ? 'モデル空間へ切り替えました' : `「${this.spaceName}」へ切り替えました`);
+    this.markDirty();
+  }
+
+  /** レイアウトを 1 つ足して、そこへ切り替える。 */
+  addLayout(): void {
+    const name = `レイアウト${this.doc.layouts.length + 1}`;
+    this.doc.beginEdit();
+    this.doc.layouts.push(makeLayout(name, this.printSettings.paper, this.printSettings.orientation));
+    this.switchSpace(this.doc.layouts.length - 1);
+    this.setStatus(`「${name}」を作りました（用紙 ${this.printSettings.paper}）。ビューポートで図面を映せます`);
+  }
+
+  /** いま開いているレイアウトを削除する。 */
+  removeLayout(): void {
+    const i = this.layoutIndex;
+    if (i === null) {
+      this.setStatus('モデル空間は削除できません');
+      return;
+    }
+    const name = this.spaceName;
+    this.doc.beginEdit();
+    this.doc.layouts.splice(i, 1);
+    this.switchSpace(this.doc.layouts.length > 0 ? Math.min(i, this.doc.layouts.length - 1) : null);
+    this.setStatus(`「${name}」を削除しました`);
+  }
+
+  /** ビューポート（紙に開ける窓）を 2 クリックの矩形で作る。 */
+  private handleViewportClick(p: Vec2): void {
+    const layout = this.activeLayout();
+    if (!layout) {
+      this.setStatus('先にレイアウトへ切り替えてください');
+      return;
+    }
+    if (this.viewportCorner === null) {
+      this.viewportCorner = p;
+      this.setStatus('窓の対角をクリックしてください');
+      this.markDirty();
+      return;
+    }
+    const a = this.viewportCorner;
+    this.viewportCorner = null;
+    const rect = {
+      x: Math.min(a.x, p.x),
+      y: Math.min(a.y, p.y),
+      width: Math.abs(p.x - a.x),
+      height: Math.abs(p.y - a.y),
+    };
+    if (rect.width < 1 || rect.height < 1) {
+      this.setStatus('窓が小さすぎます（1mm 以上の矩形をとってください）');
+      return;
+    }
+
+    // 図面全体がちょうど収まる縮尺と中心を初期値にする
+    const b = this.doc.printBounds();
+    const hasDrawing = b.minX <= b.maxX;
+    const center = hasDrawing ? vec((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2) : vec(0, 0);
+    const denom = hasDrawing ? fitScaleDenominator(rect, b.maxX - b.minX, b.maxY - b.minY) : 100;
+
+    this.doc.beginEdit();
+    const vp = makeViewport(this.doc.reserveId(), rect, center, denom);
+    layout.viewports.push(vp);
+    this.doc.selection.clear();
+    this.doc.selection.add(vp.id);
+    this.setStatus(`ビューポートを作りました（縮尺 1:${formatDenominator(vp.scaleDenominator)}）`);
+    this.markDirty();
+  }
+
+  /** ビューポート作成の 1 点目。 */
+  private viewportCorner: Vec2 | null = null;
+
+  /** 選択中のビューポート（無ければ `null`）。 */
+  private selectedViewport(): Viewport | null {
+    const layout = this.activeLayout();
+    if (!layout) return null;
+    return layout.viewports.find((v) => this.doc.selection.has(v.id)) ?? null;
+  }
+
+  /** 選択中のビューポートの縮尺・回転を変える。 */
+  editViewport(): void {
+    const vp = this.selectedViewport();
+    if (!vp) {
+      this.setStatus('先にビューポートの枠をクリックして選んでください');
+      return;
+    }
+    const denomText = window.prompt('縮尺の分母（1:N の N）', formatDenominator(vp.scaleDenominator));
+    if (denomText === null) return;
+    const rotText = window.prompt('窓の中の回転角（度・反時計回り）', String(Math.round(deg(vp.rotation))));
+    if (rotText === null) return;
+    const denom = Number(denomText);
+    const rot = Number(rotText);
+    if (!Number.isFinite(denom) || denom <= 0 || !Number.isFinite(rot)) {
+      this.setStatus('縮尺は正の数、回転角は数値で入れてください');
+      return;
+    }
+    this.doc.beginEdit();
+    vp.scaleDenominator = denom;
+    vp.rotation = rad(rot);
+    this.setStatus(`ビューポート: 縮尺 1:${formatDenominator(denom)}・回転 ${rot}°`);
+    this.markDirty();
+  }
+
+  /** 選択中のビューポートに、図面全体が収まるよう縮尺と中心を合わせる。 */
+  fitViewport(): void {
+    const vp = this.selectedViewport();
+    if (!vp) {
+      this.setStatus('先にビューポートの枠をクリックして選んでください');
+      return;
+    }
+    const b = this.doc.printBounds();
+    if (!(b.minX <= b.maxX)) {
+      this.setStatus('モデル空間に図形がありません');
+      return;
+    }
+    this.doc.beginEdit();
+    vp.center = vec((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
+    vp.scaleDenominator = fitScaleDenominator(vp.paperRect, b.maxX - b.minX, b.maxY - b.minY);
+    this.setStatus(`窓に図面を合わせました（縮尺 1:${formatDenominator(vp.scaleDenominator)}）`);
+    this.markDirty();
+  }
+
+  /**
+   * いま開いている空間へ図形を足す。
+   * モデル空間なら図面へ、用紙空間ならそのレイアウトへ（座標は紙 mm）。
+   */
+  private addToSpace(list: readonly NewEntity[]): Entity[] {
+    const layout = this.activeLayout();
+    if (!layout) return this.doc.addAll(list);
+    const made = list.map((e) => ({ ...e, id: this.doc.reserveId() }) as Entity);
+    layout.entities.push(...made);
+    return made;
+  }
+
+  /** いま開いている空間の図形（描画・選択・情報表示で使う）。 */
+  private spaceEntities(): readonly Entity[] {
+    return this.activeLayout()?.entities ?? this.doc.entities;
+  }
+
+  /** いま開いている空間で選ばれている図形。 */
+  private selectedInSpace(): Entity[] {
+    return this.spaceEntities().filter((e) => this.doc.selection.has(e.id));
+  }
+
+  /**
+   * いま開いている空間で点に当たるもの。
+   * 用紙空間では**ビューポートの枠**も掴める（枠を選んで縮尺を変えるため）。
+   */
+  private pickInSpace(p: Vec2, tol: number): Entity | Viewport | undefined {
+    const layout = this.activeLayout();
+    if (!layout) return this.doc.pick(p, tol);
+    for (let i = layout.entities.length - 1; i >= 0; i--) {
+      const e = layout.entities[i]!;
+      if (this.doc.layers.isVisible(e.layer) && hitTest(e, p, tol)) return e;
+    }
+    for (let i = layout.viewports.length - 1; i >= 0; i--) {
+      const vp = layout.viewports[i]!;
+      if (polylineNear(viewportCorners(vp), p, tol)) return vp;
+    }
+    return undefined;
+  }
+
+  /** 画面下のレイアウトタブを作り直す。 */
+  private buildLayoutTabs(): void {
+    const host = this.ui.layoutTabs;
+    if (!host) return;
+    host.textContent = '';
+
+    const tab = (label: string, index: number | null): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.className = this.layoutIndex === index ? 'tab active' : 'tab';
+      b.addEventListener('click', () => this.switchSpace(index));
+      return b;
+    };
+
+    host.append(tab('モデル', null));
+    this.doc.layouts.forEach((l, i) => host.append(tab(l.name, i)));
+
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.textContent = '＋';
+    add.title = 'レイアウトを追加';
+    add.className = 'tab add';
+    add.addEventListener('click', () => this.addLayout());
+    host.append(add);
+  }
+
   newDocument(): void {
     this.doc.clear();
     this.buildLayerList();
@@ -333,6 +600,30 @@ export class CadApp {
   snapshot(): string {
     this.drawNow();
     return this.renderer.toDataUrl();
+  }
+
+  /**
+   * 描画の計測（開発者コンソールから `TrCad2w.bench()`）。
+   *
+   * **WebGL 化の可否はこの数値を見てから決める**（issue #16）。
+   * いまの図面は壊さない（計測用の図面を別に作って描く）。
+   */
+  bench(count = 30_000): BenchResult {
+    const result = runRenderBench(
+      this.renderer,
+      { width: this.view.width, height: this.view.height },
+      { count, render: { background: this.render.background, darkBoost: this.render.darkBoost } },
+    );
+    // 計測で画面が計測用の図面になっているので、元の図面を描き直す
+    this.markDirty();
+    this.drawNow();
+    // eslint-disable-next-line no-console -- 計測結果はコンソールで見るためのもの
+    console.log(formatBenchResult(result));
+    this.setStatus(
+      `計測: ${result.entities.toLocaleString()} 図形 → ` +
+        result.cases.map((c) => `${c.name} ${c.msMedian}ms`).join(' / '),
+    );
+    return result;
   }
 
   // ---- 入力 --------------------------------------------------------------
@@ -389,6 +680,18 @@ export class CadApp {
         return;
       }
       this.handleLeftClick();
+    });
+
+    // 寸法をダブルクリックすると値を手で書き換えられる
+    c.addEventListener('dblclick', (ev) => {
+      const at = this.screenPoint(ev);
+      this.updateCursor(at);
+      const hit = this.doc.pick(this.cursorWorld, this.view.toWorldLen(6));
+      if (!hit || hit.kind !== 'dim') return;
+      ev.preventDefault();
+      this.doc.selection.clear();
+      this.doc.selection.add(hit.id);
+      this.editDimText();
     });
 
     c.addEventListener(
@@ -475,6 +778,10 @@ export class CadApp {
         case 'Home':
           this.zoomFit();
           return;
+        case 'F2':
+          ev.preventDefault();
+          this.editDimText();
+          return;
         case 'F3':
           ev.preventDefault();
           this.toggleObjectSnap();
@@ -503,8 +810,13 @@ export class CadApp {
   private handleLeftClick(): void {
     const p = this.snap?.at ?? applyGrid(this.cursorWorld, this.snapSettings);
 
+    if (this.tool.name === 'viewport') {
+      this.handleViewportClick(p);
+      return;
+    }
+
     if (this.tool.name === 'select') {
-      const hit = this.doc.pick(p, this.view.toWorldLen(6));
+      const hit = this.pickInSpace(p, this.view.toWorldLen(6));
       const additive = this.shiftHeld;
       if (!hit) {
         if (!additive) this.doc.selection.clear();
@@ -524,6 +836,11 @@ export class CadApp {
       return;
     }
 
+    if (this.tool.name === 'dim-radius' || this.tool.name === 'dim-diameter') {
+      this.handleRadialDimClick(p);
+      return;
+    }
+
     if (this.tool.name === 'text' && this.tool.pointCount === 0) {
       const input = window.prompt('文字列', this.tool.pendingText || '');
       if (input === null || input === '') return;
@@ -533,12 +850,57 @@ export class CadApp {
     const step = this.tool.click(p);
     if (step.created && step.created.length > 0) {
       this.doc.beginEdit();
-      const created = this.doc.addAll(step.created);
-      this.setStatus(`${TOOL_LABEL[this.tool.name]}を作図しました（計 ${this.doc.count} 図形）`);
+      const created = this.addToSpace(step.created);
+      this.setStatus(
+        `${TOOL_LABEL[this.tool.name]}を作図しました（${this.spaceName}・計 ${this.spaceEntities().length} 図形）`,
+      );
       // 続けて同じツールで描けるようにツールは変えない
       this.doc.selection.clear();
       for (const e of created) this.doc.selection.add(e.id);
     }
+    this.markDirty();
+  }
+
+  /**
+   * 半径・直径の寸法。**円／弧をクリックすると中心と半径を図形から採って即作図する。**
+   * 引き出す向きは押した位置（中心から見た方向）に追従する。
+   */
+  private handleRadialDimClick(p: Vec2): void {
+    const dimType = this.tool.name === 'dim-diameter' ? 'diameter' : 'radius';
+    // 吸着で中心へ寄ると向きが決まらないので、当たり判定にはカーソルの実位置を使う
+    const raw = this.cursorWorld;
+    const tol = this.view.toWorldLen(6);
+    const hit = this.doc.pick(raw, tol) ?? this.doc.pick(p, tol);
+    if (!hit || (hit.kind !== 'circle' && hit.kind !== 'arc')) {
+      this.setStatus('円または円弧をクリックしてください');
+      return;
+    }
+    const created = buildRadialDim(dimType, hit.center, hit.radius, raw, this.attrs);
+    if (!created) return;
+    this.doc.beginEdit();
+    const added = this.doc.add(created);
+    this.doc.selection.clear();
+    this.doc.selection.add(added.id);
+    this.setStatus(`${TOOL_LABEL[this.tool.name]}を作図しました（計 ${this.doc.count} 図形）`);
+    this.markDirty();
+  }
+
+  /**
+   * 寸法値の手動上書き（ダブルクリック／`F2`）。
+   * 空欄に戻すと自動計測値、`<>` は計測値に置き換わる（`約<>cm` のように書ける）。
+   */
+  editDimText(): void {
+    const dims = this.doc.selectedEntities().filter((e): e is DimEntity => e.kind === 'dim');
+    if (dims.length === 0) {
+      this.setStatus('寸法を選択してから実行してください（ダブルクリックでも開きます）');
+      return;
+    }
+    const current = dims[0]!.text;
+    const input = window.prompt('寸法値（空欄＝自動。<> は計測値に置き換わります）', current);
+    if (input === null) return;
+    this.doc.beginEdit();
+    for (const d of dims) this.doc.replace({ ...d, text: input });
+    this.setStatus(input === '' ? `${dims.length} 個を自動計測値に戻しました` : `${dims.length} 個の寸法値を変えました`);
     this.markDirty();
   }
 
@@ -553,18 +915,33 @@ export class CadApp {
       return;
     }
     const d = sub(p, this.moveBase);
+    const layout = this.activeLayout();
     this.doc.beginEdit();
     if (this.tool.name === 'move') {
-      for (const e of this.doc.selectedEntities()) this.doc.replace(translateEntity(e, d) as Entity);
+      if (layout) {
+        // 用紙空間: 図形は移動、ビューポートは窓ごと動かす
+        layout.entities = layout.entities.map((e) =>
+          this.doc.selection.has(e.id) ? (translateEntity(e, d) as Entity) : e,
+        );
+        for (const vp of layout.viewports) {
+          if (!this.doc.selection.has(vp.id)) continue;
+          vp.paperRect = { ...vp.paperRect, x: vp.paperRect.x + d.x, y: vp.paperRect.y + d.y };
+        }
+      } else {
+        for (const e of this.doc.selectedEntities()) this.doc.replace(translateEntity(e, d) as Entity);
+      }
       this.setStatus(`${this.doc.selection.size} 個を移動しました`);
       this.moveBase = null;
-    } else {
-      const copies = this.doc.selectedEntities().map((e) => {
+      this.markDirty();
+      return;
+    }
+    {
+      const copies = this.selectedInSpace().map((e) => {
         const moved = translateEntity(cloneEntity(e), d);
         const { id: _id, ...rest } = moved;
         return rest as NewEntity;
       });
-      const added = this.doc.addAll(copies);
+      const added = this.addToSpace(copies);
       this.doc.selection.clear();
       for (const e of added) this.doc.selection.add(e.id);
       this.setStatus(`${added.length} 個を複写しました（続けて複写できます）`);
@@ -660,6 +1037,18 @@ export class CadApp {
           break;
         case 'point-style':
           this.editPointStyle();
+          break;
+        case 'vp-scale':
+          this.editViewport();
+          break;
+        case 'vp-fit':
+          this.fitViewport();
+          break;
+        case 'layout-remove':
+          this.removeLayout();
+          break;
+        case 'dim-text':
+          this.editDimText();
           break;
         case 'undo':
           this.undo();
@@ -783,13 +1172,26 @@ export class CadApp {
           }
         : undefined;
 
-    this.lastStats = this.renderer.draw(this.doc, this.view, {
-      ...this.render,
-      gridSize: this.snapSettings.gridSize,
-      preview: preview.length > 0 ? preview : undefined,
-      snap: this.snap,
-      selectionBox,
-    });
+    const layout = this.activeLayout();
+    this.lastStats = layout
+      ? this.renderer.drawLayout(this.doc, layout, this.view, {
+          ...this.render,
+          // 紙の上にモデル空間のグリッドを出すと目盛りが噛み合わず読みにくい
+          showGrid: false,
+          showAxis: false,
+          gridSize: this.snapSettings.gridSize,
+          margin: this.printSettings.margin,
+          preview: preview.length > 0 ? preview : undefined,
+          snap: this.snap,
+          selectionBox,
+        })
+      : this.renderer.draw(this.doc, this.view, {
+          ...this.render,
+          gridSize: this.snapSettings.gridSize,
+          preview: preview.length > 0 ? preview : undefined,
+          snap: this.snap,
+          selectionBox,
+        });
     this.updateInfo();
   }
 
@@ -842,4 +1244,17 @@ export class CadApp {
 function isTypingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
   return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+}
+
+/** 縮尺の分母の表示（`1:200` / `1:2.5`）。整数はそのまま、端数だけ小数で見せる。 */
+export function formatDenominator(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+/** 閉じた点列の**辺の近く**か（ビューポートの枠を掴むのに使う）。 */
+function polylineNear(points: readonly Vec2[], p: Vec2, tol: number): boolean {
+  for (let i = 0; i < points.length; i++) {
+    if (distToSegment(p, points[i]!, points[(i + 1) % points.length]!) <= tol) return true;
+  }
+  return false;
 }

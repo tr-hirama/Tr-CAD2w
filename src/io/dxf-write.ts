@@ -28,6 +28,7 @@ import type { DocumentJson } from '../core/document.js';
 import type { Entity, LineStyleName, TextEntity } from '../core/entity.js';
 import { entityBounds } from '../core/entity.js';
 import { DEFAULT_POINT_STYLE } from '../core/point-style.js';
+import { dimExplode } from '../core/dim-geom.js';
 import type { Layer } from '../core/layer.js';
 import { parseColor, type Rgb } from '../core/layer.js';
 import { EMPTY_AABB, aabbUnion, deg } from '../core/geometry.js';
@@ -742,6 +743,12 @@ function writeEntity(w: DxfWriter, e: Entity): void {
     case 'text':
       if (e.text.includes('\n') || e.text.includes('\r')) writeMText(w, e);
       else writeText(w, e);
+      break;
+
+    case 'dim':
+      // DXF の DIMENSION は寸法スタイル（DIMSTYLE）で見た目が変わるので、
+      // **見たままを渡せる線分・矢印・文字へ分解して出す**（デスクトップ版と同じ判断）
+      for (const part of dimExplode(e)) writeEntity(w, { ...part, id: e.id } as Entity);
       break;
   }
 }

@@ -28,11 +28,24 @@
           <button type="button" data-tool="text" title="文字 (T)">文字</button>
         </div>
         <div class="group">
+          <button type="button" data-tool="dim-linear" title="直線寸法（2点→寸法線位置の3クリック）">寸法</button>
+          <button type="button" data-tool="dim-radius" title="半径寸法（円・円弧をクリック）">半径</button>
+          <button type="button" data-tool="dim-diameter" title="直径寸法（円・円弧をクリック）">直径</button>
+          <button type="button" data-tool="dim-angular" title="角度寸法（頂点→辺1→辺2の3クリック）">角度</button>
+          <button type="button" data-cmd="dim-text" title="寸法値を手で書き換える (F2／ダブルクリック)">寸法値</button>
+        </div>
+        <div class="group">
           <button type="button" data-tool="move" title="移動 (M)">移動</button>
           <button type="button" data-tool="copy" title="複写">複写</button>
           <button type="button" data-cmd="delete" title="削除 (Del)">削除</button>
           <button type="button" data-cmd="undo" title="元に戻す (Ctrl+Z)">元に戻す</button>
           <button type="button" data-cmd="redo" title="やり直し (Ctrl+Shift+Z)">やり直し</button>
+        </div>
+        <div class="group">
+          <button type="button" data-tool="viewport" title="用紙空間に窓を開く（2クリックの矩形）">ビューポート</button>
+          <button type="button" data-cmd="vp-scale" title="選択中のビューポートの縮尺・回転を変える">窓の縮尺</button>
+          <button type="button" data-cmd="vp-fit" title="選択中のビューポートに図面全体を合わせる">窓に合わせる</button>
+          <button type="button" data-cmd="layout-remove" title="開いているレイアウトを削除">レイアウト削除</button>
         </div>
         <div class="group">
           <button type="button" data-cmd="zoom-out" title="ズームアウト (-)">−</button>
@@ -65,6 +78,8 @@
           <li>Ctrl+Z / Ctrl+Shift+Z = 元に戻す / やり直し</li>
         </ul>
       </aside>
+
+      <nav id="layout-tabs" aria-label="空間の切替"></nav>
 
       <footer id="statusbar">
         <span id="status">起動しました</span>

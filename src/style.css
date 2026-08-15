@@ -39,12 +39,50 @@ body {
 #app {
   display: grid;
   grid-template-columns: 1fr 220px;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto 1fr auto auto;
   grid-template-areas:
     "toolbar sidebar"
     "canvas  sidebar"
+    "tabs    sidebar"
     "status  status";
   height: 100%;
+}
+
+/* 空間（モデル / レイアウト）の切替タブ */
+#layout-tabs {
+  grid-area: tabs;
+  display: flex;
+  gap: 2px;
+  padding: 3px 6px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+#layout-tabs .tab {
+  padding: 3px 12px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#layout-tabs .tab:hover {
+  background: var(--hover, rgba(127, 127, 127, 0.15));
+}
+
+#layout-tabs .tab.active {
+  background: var(--bg);
+  font-weight: 600;
+}
+
+#layout-tabs .tab.add {
+  border-radius: 4px;
+  border-bottom: 1px solid var(--border);
 }
 
 #toolbar {

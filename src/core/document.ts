@@ -40,14 +40,29 @@ export interface DocumentJson {
 
 export const DEFAULT_LINETYPE_SCALE = 500;
 
+/** Undo / Redo で積む状態。**モデル空間と用紙空間の両方**を持つ。 */
+interface Snapshot {
+  entities: Entity[];
+  layouts: LayoutSpace[];
+}
+
+/** レイアウトの複製（図形と窓の参照を共有しない）。 */
+export function cloneLayout(l: LayoutSpace): LayoutSpace {
+  return {
+    ...l,
+    entities: l.entities.map(cloneEntity),
+    viewports: l.viewports.map((v) => ({ ...v, paperRect: { ...v.paperRect }, center: { ...v.center } })),
+  };
+}
+
 export class CadDocument {
   private entityList: Entity[] = [];
   private nextId = 1;
   private index: SpatialIndex = new SpatialIndex();
   private indexDirty = true;
 
-  private undoStack: Entity[][] = [];
-  private redoStack: Entity[][] = [];
+  private undoStack: Snapshot[] = [];
+  private redoStack: Snapshot[] = [];
   private static readonly UNDO_LIMIT = 200;
 
   readonly selection = new Set<number>();
@@ -69,29 +84,50 @@ export class CadDocument {
     return this.entityList.length;
   }
 
-  /** 変更の直前に呼ぶ。ここで積んだ状態が Undo の戻り先になる。 */
+  /**
+   * 変更の直前に呼ぶ。ここで積んだ状態が Undo の戻り先になる。
+   *
+   * **モデル空間の図形だけでなく用紙空間（レイアウト）も一緒に積む。**
+   * 別にすると、用紙空間での作図やビューポートの変更が Undo で戻らない。
+   */
   beginEdit(): void {
-    this.undoStack.push(this.entityList.map(cloneEntity));
+    this.undoStack.push(this.snapshot());
     if (this.undoStack.length > CadDocument.UNDO_LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
+  }
+
+  private snapshot(): Snapshot {
+    return {
+      entities: this.entityList.map(cloneEntity),
+      layouts: this.layouts.map(cloneLayout),
+    };
+  }
+
+  private restore(s: Snapshot): void {
+    this.entityList = s.entities;
+    this.layouts = s.layouts;
+    this.afterMutate();
   }
 
   undo(): boolean {
     const prev = this.undoStack.pop();
     if (!prev) return false;
-    this.redoStack.push(this.entityList.map(cloneEntity));
-    this.entityList = prev;
-    this.afterMutate();
+    this.redoStack.push(this.snapshot());
+    this.restore(prev);
     return true;
   }
 
   redo(): boolean {
     const next = this.redoStack.pop();
     if (!next) return false;
-    this.undoStack.push(this.entityList.map(cloneEntity));
-    this.entityList = next;
-    this.afterMutate();
+    this.undoStack.push(this.snapshot());
+    this.restore(next);
     return true;
+  }
+
+  /** 図形・ビューポートに使う次の id（**両者で重複させない**）。 */
+  reserveId(): number {
+    return this.nextId++;
   }
 
   get canUndo(): boolean {
@@ -255,13 +291,7 @@ export class CadDocument {
       pointStyle: { ...this.pointStyle },
     };
     // レイアウトが無い図面には layouts を出さない（古い読み手を驚かせない）
-    if (this.layouts.length > 0) {
-      json.layouts = this.layouts.map((l) => ({
-        ...l,
-        entities: l.entities.map(cloneEntity),
-        viewports: l.viewports.map((v) => ({ ...v, paperRect: { ...v.paperRect } })),
-      }));
-    }
+    if (this.layouts.length > 0) json.layouts = this.layouts.map(cloneLayout);
     return json;
   }
 
@@ -287,11 +317,7 @@ export class CadDocument {
       if (!Array.isArray(l.entities) || !Array.isArray(l.viewports)) {
         throw new Error('図面ファイルの内容が壊れています（レイアウトが不正です）');
       }
-      return {
-        ...l,
-        entities: l.entities.map(cloneEntity),
-        viewports: l.viewports.map((v) => ({ ...v, paperRect: { ...v.paperRect } })),
-      };
+      return cloneLayout(l);
     });
     const lineTypeScale =
       Number.isFinite(json.lineTypeScale) && json.lineTypeScale > 0 ? json.lineTypeScale : DEFAULT_LINETYPE_SCALE;
@@ -311,11 +337,12 @@ export class CadDocument {
     this.pointStyle = pointStyle;
     this.entityList = entities;
     this.layouts = layouts;
-    // id は用紙空間の図形とも重ならないよう、全体の最大から続ける
-    const maxId = [...this.entityList, ...this.layouts.flatMap((l) => l.entities)].reduce(
-      (m, e) => Math.max(m, e.id),
-      0,
-    );
+    // id は用紙空間の図形・ビューポートとも重ならないよう、全体の最大から続ける
+    const maxId = [
+      ...this.entityList,
+      ...this.layouts.flatMap((l) => l.entities),
+      ...this.layouts.flatMap((l) => l.viewports),
+    ].reduce((m, e) => Math.max(m, e.id), 0);
     this.nextId = maxId + 1;
     for (const e of this.entityList) this.layers.ensure(e.layer);
     for (const l of this.layouts) for (const e of l.entities) this.layers.ensure(e.layer);
