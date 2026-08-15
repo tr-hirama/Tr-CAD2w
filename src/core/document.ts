@@ -12,6 +12,8 @@ import { cloneEntity, entityBounds, hitTest } from './entity.js';
 import { LayerTable, STANDARD_LAYERS, type Layer } from './layer.js';
 import { SpatialIndex } from './spatial-index.js';
 import type { LayoutSpace } from './layout.js';
+import { explodeInsert, type BlockDef } from './block.js';
+import { DEFAULT_POINT_STYLE, normalizeMode, type PointStyle } from './point-style.js';
 import {
   cloneDocumentInfo,
   emptyDocumentInfo,
@@ -37,6 +39,17 @@ export interface DocumentJson {
    */
   layouts?: LayoutSpace[];
   /**
+   * ブロック定義。**省略可**（この機能より前のファイルも読めるようにするため
+   * `FILE_FORMAT_VERSION` は上げていない）。
+   */
+  blocks?: BlockDef[];
+  /**
+   * 点の表示スタイル（`PDMODE` / `PDSIZE` 相当）。**省略可**
+   * （この機能より前のファイルも読めるよう任意にしてあるので
+   * `FILE_FORMAT_VERSION` は上げていない）。
+   */
+  pointStyle?: PointStyle;
+  /**
    * 概要・注記文・境界コメント・メモ。**省略可**
    * （この機能より前のファイルも読めるよう任意にしてあるので
    * `FILE_FORMAT_VERSION` は上げていない）。
@@ -46,19 +59,36 @@ export interface DocumentJson {
 
 export const DEFAULT_LINETYPE_SCALE = 500;
 
+/** Undo / Redo で積む状態。**モデル空間と用紙空間の両方**を持つ。 */
+interface Snapshot {
+  entities: Entity[];
+  layouts: LayoutSpace[];
+}
+
+/** レイアウトの複製（図形と窓の参照を共有しない）。 */
+export function cloneLayout(l: LayoutSpace): LayoutSpace {
+  return {
+    ...l,
+    entities: l.entities.map(cloneEntity),
+    viewports: l.viewports.map((v) => ({ ...v, paperRect: { ...v.paperRect }, center: { ...v.center } })),
+  };
+}
+
 export class CadDocument {
   private entityList: Entity[] = [];
   private nextId = 1;
   private index: SpatialIndex = new SpatialIndex();
   private indexDirty = true;
 
-  private undoStack: Entity[][] = [];
-  private redoStack: Entity[][] = [];
+  private undoStack: Snapshot[] = [];
+  private redoStack: Snapshot[] = [];
   private static readonly UNDO_LIMIT = 200;
 
   readonly selection = new Set<number>();
   layers = new LayerTable(STANDARD_LAYERS);
   lineTypeScale = DEFAULT_LINETYPE_SCALE;
+  /** 点の表示スタイル（図面全体で共有。`PDMODE` / `PDSIZE` 相当）。 */
+  pointStyle: PointStyle = { ...DEFAULT_POINT_STYLE };
   /**
    * 概要・注記文・境界コメント・メモ（図形ではない情報）。
    * **手書きメモ（`memoInk`）は解釈せず素通しで持つ。**
@@ -69,38 +99,116 @@ export class CadDocument {
    * 同じ尺度だと A4 より長い破線になって実線に見えてしまう。
    */
   layouts: LayoutSpace[] = [];
+  /** ブロック定義（挿入 `insert` の中身）。 */
+  blocks: BlockDef[] = [];
+  /** 展開結果のキャッシュ（図形が変わるまで使い回す）。 */
+  private explodeCache = new Map<number, Entity[]>();
 
   get entities(): readonly Entity[] {
     return this.entityList;
+  }
+
+  getBlock(name: string): BlockDef | undefined {
+    return this.blocks.find((b) => b.name === name);
+  }
+
+  /** ブロック定義を足す／差し替える。同名は上書き。 */
+  setBlock(block: BlockDef): void {
+    const i = this.blocks.findIndex((b) => b.name === block.name);
+    if (i >= 0) this.blocks[i] = block;
+    else this.blocks.push(block);
+    this.markGeometryDirty();
+  }
+
+  /** 図形かブロック定義が変わった。索引と展開キャッシュを作り直す。 */
+  private markGeometryDirty(): void {
+    this.indexDirty = true;
+    this.explodeCache.clear();
+  }
+
+  /**
+   * 図形の外接矩形。**挿入は中身を展開して求める**
+   * （`entityBounds` は中身を知らないので挿入点しか返さない）。
+   */
+  boundsOf(e: Entity): Aabb {
+    if (e.kind !== 'insert') return entityBounds(e);
+    let box = EMPTY_AABB;
+    for (const x of this.explode(e)) box = aabbUnion(box, entityBounds(x));
+    // 定義が無い挿入は挿入点だけ（見失わないように）
+    return box.minX <= box.maxX ? box : entityBounds(e);
+  }
+
+  /**
+   * 挿入を展開した図形。**描画・範囲・当たり判定はこれを通す。**
+   * 挿入以外はそのまま 1 件で返る。
+   */
+  explode(e: Entity): Entity[] {
+    if (e.kind !== 'insert') return [e];
+    const hit = this.explodeCache.get(e.id);
+    if (hit) return hit;
+    const made = explodeInsert(this, e);
+    this.explodeCache.set(e.id, made);
+    return made;
+  }
+
+  /** 図面の図形を、挿入は中身へ展開して並べたもの（出力・印刷で使う）。 */
+  flatEntities(): Entity[] {
+    const out: Entity[] = [];
+    for (const e of this.entityList) {
+      if (e.kind === 'insert') out.push(...this.explode(e));
+      else out.push(e);
+    }
+    return out;
   }
 
   get count(): number {
     return this.entityList.length;
   }
 
-  /** 変更の直前に呼ぶ。ここで積んだ状態が Undo の戻り先になる。 */
+  /**
+   * 変更の直前に呼ぶ。ここで積んだ状態が Undo の戻り先になる。
+   *
+   * **モデル空間の図形だけでなく用紙空間（レイアウト）も一緒に積む。**
+   * 別にすると、用紙空間での作図やビューポートの変更が Undo で戻らない。
+   */
   beginEdit(): void {
-    this.undoStack.push(this.entityList.map(cloneEntity));
+    this.undoStack.push(this.snapshot());
     if (this.undoStack.length > CadDocument.UNDO_LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
+  }
+
+  private snapshot(): Snapshot {
+    return {
+      entities: this.entityList.map(cloneEntity),
+      layouts: this.layouts.map(cloneLayout),
+    };
+  }
+
+  private restore(s: Snapshot): void {
+    this.entityList = s.entities;
+    this.layouts = s.layouts;
+    this.afterMutate();
   }
 
   undo(): boolean {
     const prev = this.undoStack.pop();
     if (!prev) return false;
-    this.redoStack.push(this.entityList.map(cloneEntity));
-    this.entityList = prev;
-    this.afterMutate();
+    this.redoStack.push(this.snapshot());
+    this.restore(prev);
     return true;
   }
 
   redo(): boolean {
     const next = this.redoStack.pop();
     if (!next) return false;
-    this.undoStack.push(this.entityList.map(cloneEntity));
-    this.entityList = next;
-    this.afterMutate();
+    this.undoStack.push(this.snapshot());
+    this.restore(next);
     return true;
+  }
+
+  /** 図形・ビューポートに使う次の id（**両者で重複させない**）。 */
+  reserveId(): number {
+    return this.nextId++;
   }
 
   get canUndo(): boolean {
@@ -115,7 +223,7 @@ export class CadDocument {
   add(e: NewEntity): Entity {
     const created = { ...e, id: this.nextId++ } as Entity;
     this.entityList.push(created);
-    this.indexDirty = true;
+    this.markGeometryDirty();
     return created;
   }
 
@@ -131,7 +239,7 @@ export class CadDocument {
     const i = this.entityList.findIndex((x) => x.id === e.id);
     if (i < 0) return;
     this.entityList[i] = e;
-    this.indexDirty = true;
+    this.markGeometryDirty();
   }
 
   remove(ids: Iterable<number>): number {
@@ -140,7 +248,7 @@ export class CadDocument {
     const before = this.entityList.length;
     this.entityList = this.entityList.filter((e) => !del.has(e.id));
     for (const id of del) this.selection.delete(id);
-    this.indexDirty = true;
+    this.markGeometryDirty();
     return before - this.entityList.length;
   }
 
@@ -148,12 +256,14 @@ export class CadDocument {
   clear(): void {
     this.entityList = [];
     this.layouts = [];
+    this.blocks = [];
     this.selection.clear();
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this.nextId = 1;
     this.layers = new LayerTable(STANDARD_LAYERS);
     this.lineTypeScale = DEFAULT_LINETYPE_SCALE;
+    this.pointStyle = { ...DEFAULT_POINT_STYLE };
     this.info = emptyDocumentInfo();
     this.afterMutate();
   }
@@ -163,7 +273,7 @@ export class CadDocument {
     const set = new Set(ids);
     const moved = this.entityList.filter((e) => set.has(e.id));
     this.entityList = [...this.entityList.filter((e) => !set.has(e.id)), ...moved];
-    this.indexDirty = true;
+    this.markGeometryDirty();
   }
 
   /** 重ね順: 最背面へ。 */
@@ -171,7 +281,7 @@ export class CadDocument {
     const set = new Set(ids);
     const moved = this.entityList.filter((e) => set.has(e.id));
     this.entityList = [...moved, ...this.entityList.filter((e) => !set.has(e.id))];
-    this.indexDirty = true;
+    this.markGeometryDirty();
   }
 
   /** 画面内（範囲内）の描画候補。表示 OFF の画層は外す。 */
@@ -181,12 +291,19 @@ export class CadDocument {
     return this.entityList.filter((e) => ids.has(e.id) && this.layers.isVisible(e.layer));
   }
 
-  /** 点に当たる図形のうち最前面のもの。`tol` はワールド単位。 */
+  /**
+   * 点に当たる図形のうち最前面のもの。`tol` はワールド単位。
+   * **挿入は展開した中身のどれかに当たれば、挿入そのものを返す**（1 つの物として掴む）。
+   */
   pick(p: Vec2, tol: number): Entity | undefined {
     const box: Aabb = { minX: p.x - tol, minY: p.y - tol, maxX: p.x + tol, maxY: p.y + tol };
     const candidates = this.visibleIn(box);
     for (let i = candidates.length - 1; i >= 0; i--) {
       const e = candidates[i]!;
+      if (e.kind === 'insert') {
+        if (this.explode(e).some((x) => hitTest(x, p, tol)) || hitTest(e, p, tol)) return e;
+        continue;
+      }
       if (hitTest(e, p, tol)) return e;
     }
     return undefined;
@@ -198,7 +315,7 @@ export class CadDocument {
    */
   pickBox(box: Aabb, crossing: boolean): Entity[] {
     return this.visibleIn(box).filter((e) => {
-      const b = entityBounds(e);
+      const b = this.boundsOf(e);
       if (crossing) return true; // visibleIn が既に重なり判定済み
       return b.minX >= box.minX && b.minY >= box.minY && b.maxX <= box.maxX && b.maxY <= box.maxY;
     });
@@ -207,7 +324,7 @@ export class CadDocument {
   /** 図面全体の外接矩形。空図面なら空の範囲。 */
   bounds(): Aabb {
     let box = EMPTY_AABB;
-    for (const e of this.entityList) box = aabbUnion(box, entityBounds(e));
+    for (const e of this.entityList) box = aabbUnion(box, this.boundsOf(e));
     return box;
   }
 
@@ -220,7 +337,7 @@ export class CadDocument {
   printBounds(): Aabb {
     let box = EMPTY_AABB;
     for (const e of this.entityList) {
-      if (this.layers.isVisible(e.layer)) box = aabbUnion(box, entityBounds(e));
+      if (this.layers.isVisible(e.layer)) box = aabbUnion(box, this.boundsOf(e));
     }
     return box;
   }
@@ -242,13 +359,14 @@ export class CadDocument {
       n++;
       return { ...e, ...attrs };
     });
-    if (n > 0) this.indexDirty = true;
+    if (n > 0) this.markGeometryDirty();
     return n;
   }
 
   spatialIndex(): SpatialIndex {
     if (this.indexDirty) {
-      this.index.rebuild(this.entityList.map((e) => ({ id: e.id, bounds: entityBounds(e) })));
+      // 挿入は中身の広がりで索引に載せる（挿入点だけだと画面外と判定されて消える）
+      this.index.rebuild(this.entityList.map((e) => ({ id: e.id, bounds: this.boundsOf(e) })));
       this.indexDirty = false;
     }
     return this.index;
@@ -261,17 +379,16 @@ export class CadDocument {
       lineTypeScale: this.lineTypeScale,
       layers: this.layers.all(),
       entities: this.entityList.map(cloneEntity),
+      pointStyle: { ...this.pointStyle },
     };
     // 何も入っていない文書情報は出さない（古い読み手を驚かせない）
     if (!isDocumentInfoEmpty(this.info)) json.info = cloneDocumentInfo(this.info);
-    // レイアウトが無い図面には layouts を出さない（古い読み手を驚かせない）
-    if (this.layouts.length > 0) {
-      json.layouts = this.layouts.map((l) => ({
-        ...l,
-        entities: l.entities.map(cloneEntity),
-        viewports: l.viewports.map((v) => ({ ...v, paperRect: { ...v.paperRect } })),
-      }));
+    // ブロックが無い図面には blocks を出さない（古い読み手を驚かせない）
+    if (this.blocks.length > 0) {
+      json.blocks = this.blocks.map((b) => ({ name: b.name, entities: b.entities.map(cloneEntity) }));
     }
+    // レイアウトが無い図面には layouts を出さない（古い読み手を驚かせない）
+    if (this.layouts.length > 0) json.layouts = this.layouts.map(cloneLayout);
     return json;
   }
 
@@ -297,29 +414,42 @@ export class CadDocument {
       if (!Array.isArray(l.entities) || !Array.isArray(l.viewports)) {
         throw new Error('図面ファイルの内容が壊れています（レイアウトが不正です）');
       }
-      return {
-        ...l,
-        entities: l.entities.map(cloneEntity),
-        viewports: l.viewports.map((v) => ({ ...v, paperRect: { ...v.paperRect } })),
-      };
+      return cloneLayout(l);
+    });
+    const blocks = (json.blocks ?? []).map((b) => {
+      if (typeof b?.name !== 'string' || !Array.isArray(b.entities)) {
+        throw new Error('図面ファイルの内容が壊れています（ブロック定義が不正です）');
+      }
+      return { name: b.name, entities: b.entities.map(cloneEntity) };
     });
     const lineTypeScale =
       Number.isFinite(json.lineTypeScale) && json.lineTypeScale > 0 ? json.lineTypeScale : DEFAULT_LINETYPE_SCALE;
     // 壊れた文書情報のせいで図面が開けなくならないよう、形を整えてから受ける
     const info = normalizeDocumentInfo(json.info);
+    // 点スタイルは省略可。壊れた値は既定へ落とす（描けなくならないように）
+    const pointStyle: PointStyle = {
+      mode: normalizeMode(json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode),
+      size:
+        Number.isFinite(json.pointStyle?.size) && (json.pointStyle?.size ?? 0) >= 0
+          ? (json.pointStyle?.size ?? 0)
+          : DEFAULT_POINT_STYLE.size,
+    };
 
     // ---- ここから差し替え
     this.clear();
     this.layers = layers;
     this.lineTypeScale = lineTypeScale;
+    this.pointStyle = pointStyle;
     this.info = info;
     this.entityList = entities;
     this.layouts = layouts;
-    // id は用紙空間の図形とも重ならないよう、全体の最大から続ける
-    const maxId = [...this.entityList, ...this.layouts.flatMap((l) => l.entities)].reduce(
-      (m, e) => Math.max(m, e.id),
-      0,
-    );
+    this.blocks = blocks;
+    // id は用紙空間の図形・ビューポートとも重ならないよう、全体の最大から続ける
+    const maxId = [
+      ...this.entityList,
+      ...this.layouts.flatMap((l) => l.entities),
+      ...this.layouts.flatMap((l) => l.viewports),
+    ].reduce((m, e) => Math.max(m, e.id), 0);
     this.nextId = maxId + 1;
     for (const e of this.entityList) this.layers.ensure(e.layer);
     for (const l of this.layouts) for (const e of l.entities) this.layers.ensure(e.layer);
@@ -327,7 +457,7 @@ export class CadDocument {
   }
 
   private afterMutate(): void {
-    this.indexDirty = true;
+    this.markGeometryDirty();
     for (const id of [...this.selection]) {
       if (!this.entityList.some((e) => e.id === id)) this.selection.delete(id);
     }

@@ -8,6 +8,8 @@
 
 import type { Aabb, Vec2 } from './geometry.js';
 import { aabbFromCorners, aabbOf, add, dist, distToSegment, rotate, sub, vec } from './geometry.js';
+// 寸法は幾何を持たず毎回作る。dim-geom.ts 側は型しか使わないので循環参照にならない
+import { dimGeometry } from './dim-geom.js';
 
 /** 色。`null` は ByLayer（画層色に従う）。 */
 export type EntityColor = string | null;
@@ -22,6 +24,11 @@ export interface EntityBase {
   lineStyle: LineStyleName;
   /** 線幅（mm）。0 は極細（常に 1px）。 */
   lineWidth: number;
+  /**
+   * ブロック挿入を展開して作った図形の印（デスクトップ版 `FromBlock` 相当）。
+   * **測点の取得対象から外す**ために後で使う。省略＝素の図形。
+   */
+  fromBlock?: boolean;
 }
 
 export interface LineEntity extends EntityBase {
@@ -75,6 +82,76 @@ export interface TextEntity extends EntityBase {
   vAlign: 'baseline' | 'top' | 'middle' | 'bottom';
 }
 
+export type HatchPattern = 'solid' | 'line45' | 'line135' | 'cross' | 'grid';
+
+/**
+ * ハッチング（塗り）。**境界の点列だけを持ち、線分は `hatch.ts` が毎回作る。**
+ * 点列は閉じているとみなす（最後の点と最初の点を結ぶ）。
+ */
+export interface HatchEntity extends EntityBase {
+  kind: 'hatch';
+  points: Vec2[];
+  pattern: HatchPattern;
+  /** パターン間隔（mm）。 */
+  spacing: number;
+}
+
+/**
+ * ブロック挿入。**中身は図面のブロック定義（`CadDocument.blocks`）が持ち、
+ * ここは「どのブロックを・どこへ・どれだけ拡縮して・どれだけ回して置くか」だけ。**
+ */
+export interface InsertEntity extends EntityBase {
+  kind: 'insert';
+  blockName: string;
+  at: Vec2;
+  /** X 倍率。 */
+  scale: number;
+  /** Y 倍率。**0 は X と同じ**（等倍）。デスクトップ版と同じ約束。 */
+  scaleY: number;
+  /** 回転（ラジアン、反時計回り）。 */
+  rotation: number;
+}
+
+/**
+ * ラスタ画像。**バイト列を図面に埋め込んで自己完結させる**（外部ファイルに頼らない）。
+ * 配置は矩形の対角 2 点で決める。
+ */
+export interface ImageEntity extends EntityBase {
+  kind: 'image';
+  a: Vec2;
+  b: Vec2;
+  /** 画像の中身。`data:image/png;base64,...` の形。 */
+  dataUrl: string;
+  /** 不透明度 0..1。 */
+  opacity: number;
+}
+
+/** 寸法の種類。`points` の意味が種類ごとに変わる（`dim-geom.ts` の表を見る）。 */
+export type DimType = 'linear' | 'radius' | 'diameter' | 'angular';
+
+/**
+ * 寸法。**幾何（引出線・矢印・文字）は持たず `dim-geom.ts` が毎回作る。**
+ * 計測点だけを持つので、点を動かせば値も表示も追従する。
+ */
+export interface DimEntity extends EntityBase {
+  kind: 'dim';
+  dimType: DimType;
+  /** 計測点。種類ごとに意味が変わる。 */
+  points: Vec2[];
+  /** 文字高（mm）。**0 は種類ごとの自動値**（デスクトップ版と同じ約束）。 */
+  height: number;
+  /** 矢印の長さ（mm）。0 は文字高から自動。 */
+  arrow: number;
+  /** 寸法値の小数桁。 */
+  decimals: number;
+  /** 計測値に掛ける倍率（実寸→表記）。 */
+  measureScale: number;
+  /** 寸法値の接尾（単位など）。 */
+  suffix: string;
+  /** 寸法値の手動上書き。空＝自動。`<>` は計測値に置換される。 */
+  text: string;
+}
+
 export type Entity =
   | LineEntity
   | RectEntity
@@ -82,7 +159,11 @@ export type Entity =
   | ArcEntity
   | PolylineEntity
   | PointEntity
-  | TextEntity;
+  | TextEntity
+  | HatchEntity
+  | InsertEntity
+  | ImageEntity
+  | DimEntity;
 
 export type EntityKind = Entity['kind'];
 
@@ -103,10 +184,33 @@ export const DEFAULT_ATTRS: Omit<EntityBase, 'id'> = {
   lineWidth: 0,
 };
 
+/** ハッチの既定値。 */
+export const DEFAULT_HATCH_STYLE = {
+  pattern: 'line45' as HatchPattern,
+  /** mm。図面の縮尺に合わせて調整する。 */
+  spacing: 200,
+};
+/** 寸法スタイルの既定値（デスクトップ版 `Entity` の初期値に合わせる）。 */
+export const DEFAULT_DIM_STYLE = {
+  /** 0 = 計測長から自動。 */
+  height: 0,
+  /** 0 = 文字高から自動。 */
+  arrow: 0,
+  decimals: 2,
+  measureScale: 1,
+  suffix: '',
+  text: '',
+} as const;
+
 /** 図形の複製。参照を共有しない（Undo のスナップショットとコピペで使う）。 */
 export function cloneEntity(e: Entity): Entity {
   switch (e.kind) {
     case 'polyline':
+      return { ...e, points: e.points.map((p) => vec(p.x, p.y)) };
+    case 'hatch':
+      // 配列を共有すると Undo で戻らず、コピーの境界を動かすと元も動く
+    case 'dim':
+      // 配列を共有すると Undo で戻らず、コピーの点を動かすと元も動く
       return { ...e, points: e.points.map((p) => vec(p.x, p.y)) };
     default:
       // Vec2 は読み取り専用なので浅いコピーで足りる
@@ -139,7 +243,44 @@ export function entityBounds(e: Entity): Aabb {
       return aabbFromCorners(e.at, e.at);
     case 'text':
       return aabbOf(textCorners(e));
+    case 'hatch':
+      return aabbOf(e.points);
+    case 'image':
+      return aabbFromCorners(e.a, e.b);
+    case 'insert':
+      // 中身はブロック定義にあり、ここからは見えない。挿入点だけを返す
+      // （実際の広がりは `CadDocument` が展開して求める）
+      return aabbFromCorners(e.at, e.at);
+    case 'dim':
+      return aabbOf(dimOutlinePoints(e));
   }
+}
+
+/**
+ * 寸法の外形を作る点（引出線・矢印・文字の隅）。
+ * 幾何が作れないとき（点が足りない・退化）は計測点だけを返す。
+ */
+export function dimOutlinePoints(e: DimEntity): Vec2[] {
+  const g = dimGeometry(e);
+  if (!g) return [...e.points];
+  const pts: Vec2[] = [...e.points];
+  for (const [a, b] of g.lines) pts.push(a, b);
+  for (const tri of g.arrows) pts.push(...tri);
+  if (g.text !== '') {
+    pts.push(
+      ...textCorners({
+        ...e,
+        kind: 'text',
+        at: g.textPos,
+        text: g.text,
+        height: g.textHeight,
+        rotation: g.textAngle,
+        hAlign: 'center',
+        vAlign: 'bottom',
+      }),
+    );
+  }
+  return pts;
 }
 
 /**
@@ -218,6 +359,34 @@ export function hitTest(e: Entity, p: Vec2, tol: number): boolean {
       const c = textCorners(e);
       return polylineHit(c, true, p, tol) || pointInPolygon(c, p);
     }
+    case 'hatch':
+      // 塗った内側のどこを押しても掴める（境界線だけだと選びにくい）
+      return pointInPolygon(e.points, p) || polylineHit(e.points, true, p, tol);
+    case 'image': {
+      const c = rectCorners({ ...e, kind: 'rect' });
+      return pointInPolygon(c, p) || polylineHit(c, true, p, tol);
+    }
+    case 'insert':
+      // 中身を知らないので挿入点のまわりだけ。展開後の当たり判定は呼び出し側
+      return dist(p, e.at) <= tol;
+    case 'dim': {
+      const g = dimGeometry(e);
+      if (!g) return e.points.some((q) => dist(p, q) <= tol);
+      for (const [a, b] of g.lines) if (distToSegment(p, a, b) <= tol) return true;
+      for (const tri of g.arrows) if (pointInPolygon(tri, p) || polylineHit(tri, true, p, tol)) return true;
+      if (g.text === '') return false;
+      const c = textCorners({
+        ...e,
+        kind: 'text',
+        at: g.textPos,
+        text: g.text,
+        height: g.textHeight,
+        rotation: g.textAngle,
+        hAlign: 'center',
+        vAlign: 'bottom',
+      });
+      return pointInPolygon(c, p) || polylineHit(c, true, p, tol);
+    }
   }
 }
 
@@ -266,6 +435,14 @@ export function translateEntity(e: Entity, d: Vec2): Entity {
       return { ...e, at: add(e.at, d) };
     case 'text':
       return { ...e, at: add(e.at, d) };
+    case 'hatch':
+      return { ...e, points: e.points.map((p) => add(p, d)) };
+    case 'image':
+      return { ...e, a: add(e.a, d), b: add(e.b, d) };
+    case 'insert':
+      return { ...e, at: add(e.at, d) };
+    case 'dim':
+      return { ...e, points: e.points.map((p) => add(p, d)) };
   }
 }
 
@@ -295,6 +472,19 @@ export function rotateEntity(e: Entity, c: Vec2, ang: number): Entity {
       return { ...e, at: rotate(e.at, ang, c) };
     case 'text':
       return { ...e, at: rotate(e.at, ang, c), rotation: e.rotation + ang };
+    case 'hatch':
+      return { ...e, points: e.points.map((p) => rotate(p, ang, c)) };
+    case 'image': {
+      // 回した矩形は軸平行でなくなる。**画像は軸平行のまま**、外接矩形へ収める
+      const corners = rectCorners({ ...e, kind: 'rect' }).map((p) => rotate(p, ang, c));
+      const b = aabbOf(corners);
+      return { ...e, a: vec(b.minX, b.minY), b: vec(b.maxX, b.maxY) };
+    }
+    case 'insert':
+      return { ...e, at: rotate(e.at, ang, c), rotation: e.rotation + ang };
+    case 'dim':
+      // 文字角は計測点から毎回作り直されるので、点を回すだけでよい
+      return { ...e, points: e.points.map((p) => rotate(p, ang, c)) };
   }
 }
 
@@ -316,6 +506,27 @@ export function scaleEntity(e: Entity, c: Vec2, k: number): Entity {
       return { ...e, at: s(e.at) };
     case 'text':
       return { ...e, at: s(e.at), height: e.height * Math.abs(k) };
+    case 'hatch':
+      // 間隔も一緒に拡縮する（塗りの見た目を保つ）
+      return { ...e, points: e.points.map(s), spacing: e.spacing * Math.abs(k) };
+    case 'image':
+      return { ...e, a: s(e.a), b: s(e.b) };
+    case 'insert':
+      return {
+        ...e,
+        at: s(e.at),
+        scale: e.scale * Math.abs(k),
+        // 0 は「X と同じ」の意味なので 0 のまま保つ
+        scaleY: e.scaleY === 0 ? 0 : e.scaleY * Math.abs(k),
+      };
+    case 'dim':
+      // 文字高・矢印も一緒に拡縮する（0 は自動なのでそのまま 0 に保つ）
+      return {
+        ...e,
+        points: e.points.map(s),
+        height: e.height * Math.abs(k),
+        arrow: e.arrow * Math.abs(k),
+      };
   }
 }
 
@@ -368,6 +579,23 @@ export function snapPoints(e: Entity): { kind: 'end' | 'mid' | 'center' | 'node'
     case 'text':
       out.push({ kind: 'node', at: e.at });
       break;
+    case 'hatch': {
+      const n = e.points.length;
+      for (let i = 0; i < n; i++) seg(e.points[i]!, e.points[(i + 1) % n]!);
+      break;
+    }
+    case 'image': {
+      const c = rectCorners({ ...e, kind: 'rect' });
+      for (let i = 0; i < c.length; i++) seg(c[i]!, c[(i + 1) % c.length]!);
+      break;
+    }
+    case 'insert':
+      out.push({ kind: 'node', at: e.at });
+      break;
+    case 'dim':
+      // 吸着するのは計測点（引出線の途中や矢印の頂点に吸うと使いにくい）
+      for (const p of e.points) out.push({ kind: 'node', at: p });
+      break;
   }
   return out;
 }
@@ -403,6 +631,24 @@ export function flatten(e: Entity, segmentsPerCircle = 64): Vec2[][] {
       return [];
     case 'text':
       return [];
+    case 'hatch': {
+      if (e.points.length < 3) return [];
+      // 境界だけを返す（塗りの線分は `hatch.ts` の持ち分）
+      return [[...e.points, e.points[0]!]];
+    }
+    case 'image': {
+      const c = rectCorners({ ...e, kind: 'rect' });
+      return [[...c, c[0]!]];
+    }
+    case 'insert':
+      // 中身はブロック定義にある。展開は `block.ts`
+      return [];
+    case 'dim': {
+      const g = dimGeometry(e);
+      if (!g) return [];
+      // 引出線・寸法線と、閉じた矢印
+      return [...g.lines.map(([a, b]) => [a, b]), ...g.arrows.map((tri) => [...tri, tri[0]!])];
+    }
   }
 }
 
@@ -416,12 +662,16 @@ export function entityAnchor(e: Entity): Vec2 {
     case 'circle':
     case 'arc':
       return e.center;
-    case 'polyline': {
+    case 'polyline':
+    case 'hatch':
+    case 'image':
+    case 'dim': {
       const b = entityBounds(e);
       return vec((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
     }
     case 'point':
     case 'text':
+    case 'insert':
       return e.at;
   }
 }
@@ -435,6 +685,8 @@ export function entityLength(e: Entity): number {
       return e.radius * (norm2pi(e.endAngle - e.startAngle) || Math.PI * 2);
     case 'point':
     case 'text':
+    // 寸法の「長さ」は引出線の合計になってしまい意味がないので数えない
+    case 'dim':
       return 0;
     default: {
       let total = 0;

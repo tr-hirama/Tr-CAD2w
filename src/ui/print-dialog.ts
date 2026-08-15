@@ -17,13 +17,25 @@ import {
   type Orientation,
   type PrintSettings,
 } from '../print/paper.js';
-import { createPageRenderer, printPages, releaseCanvas, removePrintArtifacts } from '../print/print-job.js';
+import {
+  createLayoutPageRenderer,
+  createPageRenderer,
+  printPages,
+  releaseCanvas,
+  removePrintArtifacts,
+} from '../print/print-job.js';
+import type { LayoutSpace } from '../core/layout.js';
 
 /** プレビューの解像度（dpi）。画面で見えれば足りる。 */
 const PREVIEW_DPI = 96;
 
 export interface PrintDialogHost {
   doc: CadDocument;
+  /**
+   * いま開いている用紙空間（無ければ `null`）。
+   * **開いていればそのレイアウトを 1 ページとして刷る。**
+   */
+  activeLayout?: () => LayoutSpace | null;
   /** 設定が変わったら呼ぶ（アプリ側に持ち帰って次回の既定にする）。 */
   onSettingsChange?: (settings: PrintSettings) => void;
   /** 閉じたときに呼ぶ（アプリ側の参照を捨てる）。 */
@@ -270,9 +282,32 @@ export class PrintDialog {
     this.showPage();
   }
 
+  /**
+   * いま刷る対象。用紙空間を開いていればそのレイアウト、そうでなければモデル空間。
+   * **レイアウトは紙に描いてあるものがそのまま 1 枚**になる。
+   */
+  private targetLayout(): LayoutSpace | null {
+    return this.host.activeLayout?.() ?? null;
+  }
+
   /** 設定に合わせて割付を取り直し、いま見ているページだけ描く。 */
   private rerender(): void {
     if (this.closed) return;
+
+    const space = this.targetLayout();
+    if (space) {
+      this.pageCount = 1;
+      this.pageIndex = 0;
+      this.scaleLabel.textContent = `「${space.name}」を 1 ページ（用紙 ${space.paper}・${
+        space.orientation === 'landscape' ? '横' : '縦'
+      }・紙のまま 1:1）`;
+      this.noteLabel.textContent = '用紙空間を開いているので、レイアウトの内容をそのまま刷ります';
+      this.noteLabel.style.display = '';
+      this.printButton.disabled = false;
+      this.showPage();
+      return;
+    }
+
     const bounds = this.host.doc.printBounds();
     const layout = pageLayout(this.settings, bounds);
     this.pageCount = layout.pages.length;
@@ -302,11 +337,14 @@ export class PrintDialog {
     this.preview.textContent = '';
 
     if (this.pageCount > 0) {
-      const previewRenderer = createPageRenderer(
-        this.host.doc,
-        { ...this.settings, dpi: PREVIEW_DPI },
-        this.host.doc.printBounds(),
-      );
+      const space = this.targetLayout();
+      const previewRenderer = space
+        ? createLayoutPageRenderer(this.host.doc, space, { ...this.settings, dpi: PREVIEW_DPI })
+        : createPageRenderer(
+            this.host.doc,
+            { ...this.settings, dpi: PREVIEW_DPI },
+            this.host.doc.printBounds(),
+          );
       const canvas = previewRenderer.renderAt(this.pageIndex);
       if (canvas) {
         // canvas をそのまま置く（toDataURL するとビットマップが二重に載る）
@@ -327,8 +365,15 @@ export class PrintDialog {
     this.noteLabel.textContent = '印刷用のページを作っています…';
     this.noteLabel.style.display = '';
     try {
-      const renderer = createPageRenderer(this.host.doc, this.settings, this.host.doc.printBounds());
-      const result = await printPages(renderer, this.settings);
+      const space = this.targetLayout();
+      const renderer = space
+        ? createLayoutPageRenderer(this.host.doc, space, this.settings)
+        : createPageRenderer(this.host.doc, this.settings, this.host.doc.printBounds());
+      // レイアウトはそのレイアウト自身の用紙・向きで刷る
+      const settings = space
+        ? { ...this.settings, paper: space.paper, orientation: space.orientation }
+        : this.settings;
+      const result = await printPages(renderer, settings);
       this.noteLabel.textContent = result.ok ? '' : (result.message ?? '印刷できませんでした');
       this.noteLabel.style.display = result.ok ? 'none' : '';
       if (result.ok) this.noteLabel.textContent = previous ?? '';

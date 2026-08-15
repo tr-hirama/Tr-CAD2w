@@ -15,10 +15,12 @@
  * | `Kind: "Polyline"` + `Pts[2n]` | `polyline` | **閉合フラグが無い**（下記） |
  * | `Kind: "Text"` + `Pts[2]` + `Text/Height/Rotation`（**度**）`/Align/VAlign` | `text` | |
  * | `Kind: "Point"` + `Pts[2]` | `point` | |
+ * | `Kind: "Dimension"` + `Pts[2n]` + `DimType/Height/DimArrow/DimDecimals/DimScale/DimSuffix/DimText` | `dim` | `DimType` 省略＝`Linear` |
  * | `Color`（`0xAARRGGBB`） | `color`（`#rrggbb`） | **画層色と同じなら ByLayer(null)** にする |
  * | `LineType`（`Continuous`…） | `lineStyle`（`solid`…） | 1 対 1 |
  * | `LineWeight`（mm） | `lineWidth`（mm） | そのまま |
  * | `LtScale` | `lineTypeScale` | 無ければ 500 |
+ * | `PointMode` / `PointSize` | `pointStyle`（`PDMODE` / `PDSIZE` 相当） | 無ければ `＋`・画面固定 |
  * | `Project` / `Comments` / `Kyokai` / `MemoText` | `info` | 概要・注記文・境界コメント・メモ |
  * | `MemoInk` | `info.memoInk` | **Windows Ink の ISF。解釈せず素通しで書き戻す** |
  *
@@ -26,7 +28,7 @@
  *
  * | 向き | 落ちるもの |
  * |---|---|
- * | tc2 → Web | ハッチ・ブロック(Insert)・画像・寸法（**件数を報告**）、測量データ（観測/座標/まわりけん/レベル/座標変換）、用紙空間、グループ、ブロック定義 |
+ * | tc2 → Web | 測量データ（観測/座標/まわりけん/レベル/座標変換）、用紙空間、グループ |
  * | Web → tc2 | 画層の**線種**（デスクトップ版の `LayerDto` は色と表示のみ）、用紙空間 |
  *
  * ## 閉じた連続線
@@ -38,12 +40,22 @@
 
 import type { DocumentJson } from '../core/document.js';
 import { DEFAULT_LINETYPE_SCALE, FILE_FORMAT_VERSION } from '../core/document.js';
-import type { Entity, LineStyleName, NewEntity, TextEntity } from '../core/entity.js';
+import type {
+  DimType,
+  Entity,
+  HatchPattern,
+  LineStyleName,
+  NewEntity,
+  TextEntity,
+} from '../core/entity.js';
+import { DEFAULT_HATCH_SPACING } from '../core/hatch.js';
+import type { BlockDef } from '../core/block.js';
 import { dist, rad, vec, type Vec2 } from '../core/geometry.js';
 import { deg } from '../core/geometry.js';
 import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '../core/layer.js';
 import { looksLikeZip, unzip, zip } from './zip.js';
+import { DEFAULT_POINT_STYLE, normalizeMode } from '../core/point-style.js';
 import {
   emptyDocumentInfo,
   isDocumentInfoEmpty,
@@ -76,6 +88,25 @@ export interface Tc2EntityDto {
   ArcEnd?: number;
   Align?: string | null;
   VAlign?: string | null;
+  Hatch?: string | null;
+  HatchSpacing?: number;
+  Block?: string | null;
+  Scale?: number;
+  ScaleY?: number;
+  Img?: string | null;
+  ImgOpacity?: number;
+  DimType?: string | null;
+  DimArrow?: number;
+  DimDecimals?: number;
+  DimScale?: number;
+  DimSuffix?: string | null;
+  DimText?: string | null;
+}
+
+/** デスクトップ版 `BlockDto`（名前と中身）。 */
+export interface Tc2BlockDto {
+  Name: string;
+  Entities: Tc2EntityDto[];
 }
 
 /** 概要（デスクトップ版 `ProjectInfoDto`）。 */
@@ -104,6 +135,11 @@ export interface Tc2DocDto {
   CurrentLayer: string;
   Entities: Tc2EntityDto[];
   LtScale?: number | null;
+  Blocks?: Tc2BlockDto[] | null;
+  /** 点の表示モード（`PDMODE` 相当）。 */
+  PointMode?: number | null;
+  /** 点の表示サイズ（`PDSIZE` 相当。0 は画面固定）。 */
+  PointSize?: number | null;
   Project?: Tc2ProjectDto | null;
   Comments?: Tc2CommentDto[] | null;
   Kyokai?: Tc2KyokaiDto[] | null;
@@ -140,6 +176,38 @@ const VALIGN_TO_V: Readonly<Record<string, TextEntity['vAlign']>> = {
   Bottom: 'bottom',
   Middle: 'middle',
   Top: 'top',
+};
+
+/** デスクトップ版 `HatchPattern` ⇔ Web 版 `pattern`。 */
+const HATCH_TO_WEB: Readonly<Record<string, HatchPattern>> = {
+  Solid: 'solid',
+  Line45: 'line45',
+  Line135: 'line135',
+  Cross: 'cross',
+  Grid: 'grid',
+};
+
+const HATCH_TO_TC2: Record<HatchPattern, string> = {
+  solid: 'Solid',
+  line45: 'Line45',
+  line135: 'Line135',
+  cross: 'Cross',
+  grid: 'Grid',
+};
+
+/** デスクトップ版 `DimType`（省略＝`Linear`）⇔ Web 版 `dimType`。 */
+const DIM_TYPE_TO_WEB: Readonly<Record<string, DimType>> = {
+  Linear: 'linear',
+  Radius: 'radius',
+  Diameter: 'diameter',
+  Angular: 'angular',
+};
+
+const DIM_TYPE_TO_TC2: Record<DimType, string> = {
+  linear: 'Linear',
+  radius: 'Radius',
+  diameter: 'Diameter',
+  angular: 'Angular',
 };
 
 const H_TO_ALIGN: Record<TextEntity['hAlign'], string> = { left: 'Left', center: 'Center', right: 'Right' };
@@ -236,6 +304,18 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
     droppedSections.push(label);
   }
 
+  // ブロック定義（挿入の中身）。中の図形にも同じ変換をかける
+  const blocks: BlockDef[] = [];
+  for (const b of dto.Blocks ?? []) {
+    if (typeof b?.Name !== 'string' || !Array.isArray(b.Entities)) continue;
+    const inner: Entity[] = [];
+    for (const d of b.Entities) {
+      const built = buildEntity(d, layerColor);
+      if (built) inner.push({ ...built, id: id++ } as Entity);
+    }
+    blocks.push({ name: b.Name, entities: inner });
+  }
+
   const ltScale = typeof dto.LtScale === 'number' && dto.LtScale > 0 ? dto.LtScale : DEFAULT_LINETYPE_SCALE;
   const json: DocumentJson = {
     format: 'tr-cad2w',
@@ -243,7 +323,15 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
     lineTypeScale: ltScale,
     layers,
     entities,
+    pointStyle: {
+      mode: normalizeMode(typeof dto.PointMode === 'number' ? dto.PointMode : DEFAULT_POINT_STYLE.mode),
+      size:
+        typeof dto.PointSize === 'number' && Number.isFinite(dto.PointSize) && dto.PointSize >= 0
+          ? dto.PointSize
+          : DEFAULT_POINT_STYLE.size,
+    },
   };
+  if (blocks.length > 0) json.blocks = blocks;
   const info = tc2InfoToDocument(dto);
   if (!isDocumentInfoEmpty(info)) json.info = info;
   return { json, skipped, droppedSections };
@@ -329,9 +417,66 @@ function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntit
         vAlign: VALIGN_TO_V[d.VAlign ?? 'Baseline'] ?? 'baseline',
       };
     }
+    case 'Hatch': {
+      if (points.length < 3) return null;
+      return {
+        ...base,
+        kind: 'hatch',
+        points,
+        pattern: HATCH_TO_WEB[d.Hatch ?? 'Solid'] ?? 'solid',
+        spacing: numberOr(d.HatchSpacing, DEFAULT_HATCH_SPACING),
+      };
+    }
+    case 'Insert': {
+      const name = d.Block ?? '';
+      if (points.length < 1 || name === '') return null;
+      return {
+        ...base,
+        kind: 'insert',
+        blockName: name,
+        at: points[0]!,
+        scale: numberOr(d.Scale, 1),
+        scaleY: numberOr(d.ScaleY, 0),
+        rotation: rad(numberOr(d.Rotation, 0)),
+      };
+    }
+    case 'Image': {
+      const img = d.Img ?? '';
+      if (points.length < 2 || img === '') return null;
+      return {
+        ...base,
+        kind: 'image',
+        a: points[0]!,
+        b: points[1]!,
+        dataUrl: dataUrlOfBase64(img),
+        opacity: numberOr(d.ImgOpacity, 1),
+      };
+    }
+    case 'Dimension': {
+      const dimType = DIM_TYPE_TO_WEB[d.DimType ?? 'Linear'] ?? 'linear';
+      // 直線・角度は 3 点、半径・直径は 2 点そろっていないと幾何が作れない
+      const need = dimType === 'radius' || dimType === 'diameter' ? 2 : 3;
+      if (points.length < need) return null;
+      return {
+        ...base,
+        kind: 'dim',
+        dimType,
+        points,
+        height: numberOr(d.Height, 0),
+        arrow: numberOr(d.DimArrow, 0),
+        decimals: Math.round(numberOr(d.DimDecimals, 2)),
+        measureScale: numberOr(d.DimScale, 1),
+        suffix: d.DimSuffix ?? '',
+        text: d.DimText ?? '',
+      };
+    }
     default:
-      return null; // Hatch / Insert / Image / Dimension など
+      return null; // まだ対応していない種別
   }
+}
+
+function numberOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
 /** Web 版の `DocumentJson` → デスクトップ版の JSON（`DocDto`）。 */
@@ -354,7 +499,17 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     CurrentLayer: '0',
     Entities: entities,
     LtScale: json.lineTypeScale,
+    PointMode: json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode,
+    PointSize: json.pointStyle?.size ?? DEFAULT_POINT_STYLE.size,
   };
+
+  const blocks = json.blocks ?? [];
+  if (blocks.length > 0) {
+    out.Blocks = blocks.map((b) => ({
+      Name: b.name,
+      Entities: b.entities.map((e) => toTc2Entity(e, layerColor)).filter((x): x is Tc2EntityDto => x !== null),
+    }));
+  }
 
   const info = json.info;
   if (info && !isDocumentInfoEmpty(info)) {
@@ -423,7 +578,66 @@ function toTc2Entity(e: Entity, layerColor: Map<string, number>): Tc2EntityDto |
         Align: H_TO_ALIGN[e.hAlign],
         VAlign: V_TO_VALIGN[e.vAlign],
       };
+    case 'hatch':
+      if (e.points.length < 3) return null;
+      return {
+        ...base,
+        Kind: 'Hatch',
+        Pts: e.points.flatMap((p) => [p.x, p.y]),
+        Hatch: HATCH_TO_TC2[e.pattern],
+        HatchSpacing: e.spacing,
+      };
+    case 'insert':
+      return {
+        ...base,
+        Kind: 'Insert',
+        Pts: [e.at.x, e.at.y],
+        Block: e.blockName,
+        Scale: e.scale,
+        ScaleY: e.scaleY,
+        Rotation: normalizeDegrees(deg(e.rotation)),
+      };
+    case 'image':
+      return {
+        ...base,
+        Kind: 'Image',
+        Pts: [e.a.x, e.a.y, e.b.x, e.b.y],
+        // デスクトップ版は「素の base64」で持つ（data URL ではない）
+        Img: base64OfDataUrl(e.dataUrl),
+        ImgOpacity: e.opacity,
+      };
+    case 'dim':
+      return {
+        ...base,
+        Kind: 'Dimension',
+        Pts: e.points.flatMap((p) => [p.x, p.y]),
+        Height: e.height,
+        DimType: DIM_TYPE_TO_TC2[e.dimType],
+        DimArrow: e.arrow,
+        DimDecimals: e.decimals,
+        DimScale: e.measureScale,
+        DimSuffix: e.suffix,
+        DimText: e.text,
+      };
   }
+}
+
+/** `data:image/png;base64,XXXX` → `XXXX`。すでに素の base64 ならそのまま。 */
+export function base64OfDataUrl(dataUrl: string): string {
+  const i = dataUrl.indexOf('base64,');
+  return i >= 0 ? dataUrl.slice(i + 'base64,'.length) : dataUrl;
+}
+
+/**
+ * 素の base64 → `data:...;base64,...`。
+ *
+ * デスクトップ版は画像の種類を持たないので、**先頭のバイトから見分ける**
+ * （PNG は `\x89PNG`＝base64 で `iVBORw0KGgo`、JPEG は `\xff\xd8\xff`＝`/9j/`）。
+ */
+export function dataUrlOfBase64(b64: string): string {
+  if (b64.startsWith('data:')) return b64;
+  const mime = b64.startsWith('/9j/') ? 'image/jpeg' : b64.startsWith('R0lGOD') ? 'image/gif' : 'image/png';
+  return `data:${mime};base64,${b64}`;
 }
 
 function normalizeDegrees(d: number): number {
