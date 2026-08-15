@@ -72,6 +72,17 @@ import {
   type ToolName,
 } from './tools.js';
 import { ErrorGuard } from './error-guard.js';
+import {
+  affineApply,
+  affineDet,
+  controlPoints,
+  helmertApply,
+  helmertRotationDeg,
+  helmertScale,
+  residuals,
+  solveAffine,
+  solveHelmert,
+} from '../survey/transform.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
 import {
@@ -133,6 +144,9 @@ export class CadApp {
       layerList: HTMLElement;
       /** 空間（モデル / レイアウト）の切替タブ。 */
       layoutTabs: HTMLElement;
+      /** 座標変換の枠（無い図面では隠す）。 */
+      transformPanel: HTMLElement;
+      transformList: HTMLElement;
     },
   ) {
     this.renderer = new Renderer(canvas);
@@ -144,6 +158,7 @@ export class CadApp {
     this.bindToolbar();
     this.bindDragAndDrop();
     this.buildLayerList();
+    this.buildTransformList();
     this.buildLayoutTabs();
 
     const ro = new ResizeObserver(() => this.handleResize());
@@ -341,6 +356,7 @@ export class CadApp {
         this.setStatus(`${picked.name} を開きました（${this.doc.count} 図形）`);
       }
       this.buildLayerList();
+      this.buildTransformList();
       this.zoomFit();
     } catch (err) {
       this.setStatus(`${picked.name} を開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
@@ -1484,6 +1500,76 @@ export class CadApp {
       if (btn.dataset['cmd'] === 'osnap') btn.classList.toggle('active', this.snapSettings.objectSnap);
       if (btn.dataset['cmd'] === 'gsnap') btn.classList.toggle('active', this.snapSettings.gridSnap);
     }
+  }
+
+  /**
+   * 座標変換の共通点と、そこから解いたパラメータ（**表示だけ**。issue #29 の 2/3）。
+   *
+   * ヘルマート（相似・4 パラメータ）を主に見せ、**残差**を必ず併記する。
+   * 最小二乗は共通点が悪くても「解」を返すので、残差を出さないと
+   * **合っていない変換に気づけない**。
+   */
+  private buildTransformList(): void {
+    const panel = this.ui.transformPanel;
+    const host = this.ui.transformList;
+    if (!panel || !host) return;
+    panel.hidden = this.doc.transform.length === 0;
+    if (panel.hidden) return;
+
+    host.textContent = '';
+    const { points, skipped } = controlPoints(this.doc.transform);
+
+    const t = document.createElement('table');
+    t.className = 'transform-table';
+    const head = document.createElement('tr');
+    for (const label of ['点名', '前 X', '前 Y', '後 X', '後 Y']) {
+      const th = document.createElement('th');
+      th.textContent = label;
+      head.append(th);
+    }
+    t.append(head);
+    for (const r of this.doc.transform) {
+      const tr = document.createElement('tr');
+      for (const v of [r.name, r.sx, r.sy, r.tx, r.ty]) {
+        const td = document.createElement('td');
+        td.textContent = v;
+        tr.append(td);
+      }
+      t.append(tr);
+    }
+    host.append(t);
+
+    const note = (text: string, warn = false): void => {
+      const p = document.createElement('p');
+      p.className = warn ? 'transform-note warn' : 'transform-note';
+      p.textContent = text;
+      host.append(p);
+    };
+
+    const h = solveHelmert(points);
+    if (!h) {
+      note(
+        points.length < 2
+          ? `共通点が ${points.length} 点。ヘルマートには 2 点以上が要ります`
+          : '共通点が 1 か所に固まっているため解けません',
+        true,
+      );
+    } else {
+      const res = residuals(points, (x, y) => helmertApply(h, x, y));
+      note(
+        `ヘルマート: 倍率 ${helmertScale(h).toFixed(6)} ／ 回転 ${helmertRotationDeg(h).toFixed(4)}° ／ 移動 (${h.c.toFixed(3)}, ${h.d.toFixed(3)})`,
+      );
+      note(`残差 最大 ${res.max.toFixed(4)} ／ RMS ${res.rms.toFixed(4)}（${points.length} 点）`, res.max > 0.05);
+    }
+
+    // アフィンは 3 点以上あるときだけ添える（せん断が要る現場向け）
+    const a = solveAffine(points);
+    if (a) {
+      const ares = residuals(points, (x, y) => affineApply(a, x, y));
+      note(`アフィン: 面積比 ${affineDet(a).toFixed(6)} ／ 残差 最大 ${ares.max.toFixed(4)}`);
+    }
+
+    if (skipped > 0) note(`数値がそろっていない行が ${skipped} 件あり、計算から外しました`, true);
   }
 
   private buildLayerList(): void {

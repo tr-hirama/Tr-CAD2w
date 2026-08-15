@@ -378,3 +378,34 @@ body {
   background: #fff;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
+
+/* 座標変換。表示だけ。issue #29 */
+#transform-panel .transform-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+#transform-panel .transform-table th {
+  text-align: left;
+  font-weight: 600;
+  opacity: 0.7;
+  padding: 1px 4px 1px 0;
+}
+#transform-panel .transform-table td {
+  padding: 1px 4px 1px 0;
+  white-space: nowrap;
+}
+#transform-panel .transform-table td:not(:first-child),
+#transform-panel .transform-table th:not(:first-child) {
+  text-align: right;
+}
+#transform-panel .transform-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+#transform-panel .transform-note.warn {
+  opacity: 1;
+  color: #c0392b;
+}

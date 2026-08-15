@@ -14,6 +14,7 @@ import { SpatialIndex } from './spatial-index.js';
 import type { LayoutSpace } from './layout.js';
 import { explodeInsert, type BlockDef } from './block.js';
 import { DEFAULT_POINT_STYLE, normalizeMode, type PointStyle } from './point-style.js';
+import { cloneTransformRows, normalizeTransformRows, type TransformRow } from '../survey/transform.js';
 import {
   cloneDocumentInfo,
   emptyDocumentInfo,
@@ -55,6 +56,12 @@ export interface DocumentJson {
    * `FILE_FORMAT_VERSION` は上げていない）。
    */
   info?: DocumentInfo;
+  /**
+   * 座標変換の共通点。**省略可**
+   * （この機能より前のファイルも読めるよう任意にしてあるので
+   * `FILE_FORMAT_VERSION` は上げていない）。
+   */
+  transform?: TransformRow[];
 }
 
 export const DEFAULT_LINETYPE_SCALE = 500;
@@ -94,6 +101,8 @@ export class CadDocument {
    * **手書きメモ（`memoInk`）は解釈せず素通しで持つ。**
    */
   info: DocumentInfo = emptyDocumentInfo();
+  /** 座標変換の共通点。**この版は表示だけ**（issue #29 の 2/3）。 */
+  transform: TransformRow[] = [];
   /**
    * 用紙空間（レイアウト）。**モデル空間とは線種尺度が別**（用紙側は 5）。
    * 同じ尺度だと A4 より長い破線になって実線に見えてしまう。
@@ -265,6 +274,7 @@ export class CadDocument {
     this.lineTypeScale = DEFAULT_LINETYPE_SCALE;
     this.pointStyle = { ...DEFAULT_POINT_STYLE };
     this.info = emptyDocumentInfo();
+    this.transform = [];
     this.afterMutate();
   }
 
@@ -383,6 +393,8 @@ export class CadDocument {
     };
     // 何も入っていない文書情報は出さない（古い読み手を驚かせない）
     if (!isDocumentInfoEmpty(this.info)) json.info = cloneDocumentInfo(this.info);
+    // 空の座標変換は出さない（古い読み手を驚かせない）
+    if (this.transform.length > 0) json.transform = cloneTransformRows(this.transform);
     // ブロックが無い図面には blocks を出さない（古い読み手を驚かせない）
     if (this.blocks.length > 0) {
       json.blocks = this.blocks.map((b) => ({ name: b.name, entities: b.entities.map(cloneEntity) }));
@@ -426,6 +438,7 @@ export class CadDocument {
       Number.isFinite(json.lineTypeScale) && json.lineTypeScale > 0 ? json.lineTypeScale : DEFAULT_LINETYPE_SCALE;
     // 壊れた文書情報のせいで図面が開けなくならないよう、形を整えてから受ける
     const info = normalizeDocumentInfo(json.info);
+    const transform = normalizeTransformRows(json.transform);
     // 点スタイルは省略可。壊れた値は既定へ落とす（描けなくならないように）
     const pointStyle: PointStyle = {
       mode: normalizeMode(json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode),
@@ -441,6 +454,7 @@ export class CadDocument {
     this.lineTypeScale = lineTypeScale;
     this.pointStyle = pointStyle;
     this.info = info;
+    this.transform = transform;
     this.entityList = entities;
     this.layouts = layouts;
     this.blocks = blocks;
