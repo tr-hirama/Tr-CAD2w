@@ -71,6 +71,7 @@ import {
   type DrawAttrs,
   type ToolName,
 } from './tools.js';
+import { ErrorGuard } from './error-guard.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
 import {
@@ -1523,10 +1524,31 @@ export class CadApp {
     this.dirty = true;
   }
 
+  /**
+   * 描画ループ。**例外が出ても次のフレームを必ず予約する。**
+   *
+   * ここで例外が抜けると `requestAnimationFrame` の再帰が途切れ、以後いっさい
+   * 描画されない（画面が固まったまま戻らない。issue #34）。握りつぶすのではなく、
+   * **初出はコンソールとステータスバーに必ず出す**。同じ例外は 60fps で出続けるので
+   * `ErrorGuard` が 2 回目以降を黙らせる。
+   */
   private frame(): void {
-    if (this.dirty) this.drawNow();
+    try {
+      if (this.dirty) this.drawNow();
+    } catch (err) {
+      const first = this.errors.report(err);
+      if (first) {
+        console.error('[Tr-CAD2w] 描画中に例外が出ました:', err);
+        this.setStatus(`描画でエラーが出ました: ${first.message}（詳細はコンソール）`);
+      }
+      // 同じ状態で毎フレーム投げ直さないよう、要求は下ろす（次の操作で立て直る）
+      this.dirty = false;
+    }
     requestAnimationFrame(() => this.frame());
   }
+
+  /** 描画で出た例外の受け皿（同じものを何度も報告しない）。 */
+  private readonly errors = new ErrorGuard();
 
   private drawNow(): void {
     this.dirty = false;
