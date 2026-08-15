@@ -21,6 +21,12 @@ export type ToolName =
   | 'text'
   | 'move'
   | 'copy'
+  /** 閉じた図形をクリックして塗る。 */
+  | 'hatch'
+  /** ブロックを置く位置をクリックする。 */
+  | 'insert'
+  /** 画像を置く矩形を 2 クリックで決める。 */
+  | 'image'
   /** 用紙空間で「紙に開ける窓」を 2 クリックの矩形で作る。 */
   | 'viewport'
   | 'dim-linear'
@@ -39,6 +45,9 @@ export const TOOL_LABEL: Record<ToolName, string> = {
   text: '文字',
   move: '移動',
   copy: '複写',
+  hatch: 'ハッチ',
+  insert: 'ブロック挿入',
+  image: '画像挿入',
   viewport: 'ビューポート',
   'dim-linear': '直線寸法',
   'dim-radius': '半径寸法',
@@ -221,6 +230,7 @@ export class DrawTool {
         ];
       }
       default:
+        // ハッチ・ブロック挿入・画像は図面やファイルが要るので `CadApp` 側で作る
         // 半径・直径は「円／弧をクリックして図形から採る」ので CadApp 側で作る
         return null;
     }
@@ -264,12 +274,17 @@ export function requiredPoints(name: ToolName): number | null {
     case 'circle':
     case 'move':
     case 'copy':
+    case 'image':
     case 'viewport':
       return 2;
     case 'arc':
     case 'dim-linear':
     case 'dim-angular':
       return 3;
+    // 閉図形／挿入位置を 1 クリックで決める（作るのは CadApp 側）
+    case 'hatch':
+    case 'insert':
+      return 1;
     case 'polyline':
       return null;
     case 'select':
@@ -304,6 +319,12 @@ export function promptFor(name: ToolName, collected: number): string {
       return collected === 0 ? '基点をクリック' : '移動先をクリック';
     case 'copy':
       return collected === 0 ? '基点をクリック' : '複写先をクリック';
+    case 'hatch':
+      return '塗る閉じた図形（矩形・円・閉じた連続線）をクリック';
+    case 'insert':
+      return 'ブロックを置く位置をクリック';
+    case 'image':
+      return collected === 0 ? '画像を置く1つ目の角をクリック' : '対角をクリック';
     case 'viewport':
       return collected === 0 ? '窓の1つ目の角をクリック（用紙空間）' : '窓の対角をクリック';
     case 'dim-linear':

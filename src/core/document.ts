@@ -12,6 +12,7 @@ import { cloneEntity, entityBounds, hitTest } from './entity.js';
 import { LayerTable, STANDARD_LAYERS, type Layer } from './layer.js';
 import { SpatialIndex } from './spatial-index.js';
 import type { LayoutSpace } from './layout.js';
+import { explodeInsert, type BlockDef } from './block.js';
 import { DEFAULT_POINT_STYLE, normalizeMode, type PointStyle } from './point-style.js';
 
 /** 保存形式のバージョン。**破壊的変更のときだけ上げる。** */
@@ -30,6 +31,11 @@ export interface DocumentJson {
    * ので、`FILE_FORMAT_VERSION` は上げていない。
    */
   layouts?: LayoutSpace[];
+  /**
+   * ブロック定義。**省略可**（この機能より前のファイルも読めるようにするため
+   * `FILE_FORMAT_VERSION` は上げていない）。
+   */
+  blocks?: BlockDef[];
   /**
    * 点の表示スタイル（`PDMODE` / `PDSIZE` 相当）。**省略可**
    * （この機能より前のファイルも読めるよう任意にしてあるので
@@ -75,9 +81,66 @@ export class CadDocument {
    * 同じ尺度だと A4 より長い破線になって実線に見えてしまう。
    */
   layouts: LayoutSpace[] = [];
+  /** ブロック定義（挿入 `insert` の中身）。 */
+  blocks: BlockDef[] = [];
+  /** 展開結果のキャッシュ（図形が変わるまで使い回す）。 */
+  private explodeCache = new Map<number, Entity[]>();
 
   get entities(): readonly Entity[] {
     return this.entityList;
+  }
+
+  getBlock(name: string): BlockDef | undefined {
+    return this.blocks.find((b) => b.name === name);
+  }
+
+  /** ブロック定義を足す／差し替える。同名は上書き。 */
+  setBlock(block: BlockDef): void {
+    const i = this.blocks.findIndex((b) => b.name === block.name);
+    if (i >= 0) this.blocks[i] = block;
+    else this.blocks.push(block);
+    this.markGeometryDirty();
+  }
+
+  /** 図形かブロック定義が変わった。索引と展開キャッシュを作り直す。 */
+  private markGeometryDirty(): void {
+    this.indexDirty = true;
+    this.explodeCache.clear();
+  }
+
+  /**
+   * 図形の外接矩形。**挿入は中身を展開して求める**
+   * （`entityBounds` は中身を知らないので挿入点しか返さない）。
+   */
+  boundsOf(e: Entity): Aabb {
+    if (e.kind !== 'insert') return entityBounds(e);
+    let box = EMPTY_AABB;
+    for (const x of this.explode(e)) box = aabbUnion(box, entityBounds(x));
+    // 定義が無い挿入は挿入点だけ（見失わないように）
+    return box.minX <= box.maxX ? box : entityBounds(e);
+  }
+
+  /**
+   * 挿入を展開した図形。**描画・範囲・当たり判定はこれを通す。**
+   * 挿入以外はそのまま 1 件で返る。
+   */
+  explode(e: Entity): Entity[] {
+    if (e.kind !== 'insert') return [e];
+    const hit = this.explodeCache.get(e.id);
+    if (hit) return hit;
+    const made = explodeInsert(this, e);
+    this.explodeCache.set(e.id, made);
+    return made;
+  }
+
+  /** 図面の図形を、挿入は中身へ展開して並べたもの（出力・印刷で使う）。 */
+  flatEntities(): Entity[] {
+    const out: Entity[] = [];
+    for (const e of this.entityList) {
+      if (e.kind === 'insert') out.push(...this.explode(e));
+      else out.push(e);
+    }
+    return out;
   }
 
   get count(): number {
@@ -142,7 +205,7 @@ export class CadDocument {
   add(e: NewEntity): Entity {
     const created = { ...e, id: this.nextId++ } as Entity;
     this.entityList.push(created);
-    this.indexDirty = true;
+    this.markGeometryDirty();
     return created;
   }
 
@@ -158,7 +221,7 @@ export class CadDocument {
     const i = this.entityList.findIndex((x) => x.id === e.id);
     if (i < 0) return;
     this.entityList[i] = e;
-    this.indexDirty = true;
+    this.markGeometryDirty();
   }
 
   remove(ids: Iterable<number>): number {
@@ -167,7 +230,7 @@ export class CadDocument {
     const before = this.entityList.length;
     this.entityList = this.entityList.filter((e) => !del.has(e.id));
     for (const id of del) this.selection.delete(id);
-    this.indexDirty = true;
+    this.markGeometryDirty();
     return before - this.entityList.length;
   }
 
@@ -175,6 +238,7 @@ export class CadDocument {
   clear(): void {
     this.entityList = [];
     this.layouts = [];
+    this.blocks = [];
     this.selection.clear();
     this.undoStack.length = 0;
     this.redoStack.length = 0;
@@ -190,7 +254,7 @@ export class CadDocument {
     const set = new Set(ids);
     const moved = this.entityList.filter((e) => set.has(e.id));
     this.entityList = [...this.entityList.filter((e) => !set.has(e.id)), ...moved];
-    this.indexDirty = true;
+    this.markGeometryDirty();
   }
 
   /** 重ね順: 最背面へ。 */
@@ -198,7 +262,7 @@ export class CadDocument {
     const set = new Set(ids);
     const moved = this.entityList.filter((e) => set.has(e.id));
     this.entityList = [...moved, ...this.entityList.filter((e) => !set.has(e.id))];
-    this.indexDirty = true;
+    this.markGeometryDirty();
   }
 
   /** 画面内（範囲内）の描画候補。表示 OFF の画層は外す。 */
@@ -208,12 +272,19 @@ export class CadDocument {
     return this.entityList.filter((e) => ids.has(e.id) && this.layers.isVisible(e.layer));
   }
 
-  /** 点に当たる図形のうち最前面のもの。`tol` はワールド単位。 */
+  /**
+   * 点に当たる図形のうち最前面のもの。`tol` はワールド単位。
+   * **挿入は展開した中身のどれかに当たれば、挿入そのものを返す**（1 つの物として掴む）。
+   */
   pick(p: Vec2, tol: number): Entity | undefined {
     const box: Aabb = { minX: p.x - tol, minY: p.y - tol, maxX: p.x + tol, maxY: p.y + tol };
     const candidates = this.visibleIn(box);
     for (let i = candidates.length - 1; i >= 0; i--) {
       const e = candidates[i]!;
+      if (e.kind === 'insert') {
+        if (this.explode(e).some((x) => hitTest(x, p, tol)) || hitTest(e, p, tol)) return e;
+        continue;
+      }
       if (hitTest(e, p, tol)) return e;
     }
     return undefined;
@@ -225,7 +296,7 @@ export class CadDocument {
    */
   pickBox(box: Aabb, crossing: boolean): Entity[] {
     return this.visibleIn(box).filter((e) => {
-      const b = entityBounds(e);
+      const b = this.boundsOf(e);
       if (crossing) return true; // visibleIn が既に重なり判定済み
       return b.minX >= box.minX && b.minY >= box.minY && b.maxX <= box.maxX && b.maxY <= box.maxY;
     });
@@ -234,7 +305,7 @@ export class CadDocument {
   /** 図面全体の外接矩形。空図面なら空の範囲。 */
   bounds(): Aabb {
     let box = EMPTY_AABB;
-    for (const e of this.entityList) box = aabbUnion(box, entityBounds(e));
+    for (const e of this.entityList) box = aabbUnion(box, this.boundsOf(e));
     return box;
   }
 
@@ -247,7 +318,7 @@ export class CadDocument {
   printBounds(): Aabb {
     let box = EMPTY_AABB;
     for (const e of this.entityList) {
-      if (this.layers.isVisible(e.layer)) box = aabbUnion(box, entityBounds(e));
+      if (this.layers.isVisible(e.layer)) box = aabbUnion(box, this.boundsOf(e));
     }
     return box;
   }
@@ -269,13 +340,14 @@ export class CadDocument {
       n++;
       return { ...e, ...attrs };
     });
-    if (n > 0) this.indexDirty = true;
+    if (n > 0) this.markGeometryDirty();
     return n;
   }
 
   spatialIndex(): SpatialIndex {
     if (this.indexDirty) {
-      this.index.rebuild(this.entityList.map((e) => ({ id: e.id, bounds: entityBounds(e) })));
+      // 挿入は中身の広がりで索引に載せる（挿入点だけだと画面外と判定されて消える）
+      this.index.rebuild(this.entityList.map((e) => ({ id: e.id, bounds: this.boundsOf(e) })));
       this.indexDirty = false;
     }
     return this.index;
@@ -290,6 +362,10 @@ export class CadDocument {
       entities: this.entityList.map(cloneEntity),
       pointStyle: { ...this.pointStyle },
     };
+    // ブロックが無い図面には blocks を出さない（古い読み手を驚かせない）
+    if (this.blocks.length > 0) {
+      json.blocks = this.blocks.map((b) => ({ name: b.name, entities: b.entities.map(cloneEntity) }));
+    }
     // レイアウトが無い図面には layouts を出さない（古い読み手を驚かせない）
     if (this.layouts.length > 0) json.layouts = this.layouts.map(cloneLayout);
     return json;
@@ -319,6 +395,12 @@ export class CadDocument {
       }
       return cloneLayout(l);
     });
+    const blocks = (json.blocks ?? []).map((b) => {
+      if (typeof b?.name !== 'string' || !Array.isArray(b.entities)) {
+        throw new Error('図面ファイルの内容が壊れています（ブロック定義が不正です）');
+      }
+      return { name: b.name, entities: b.entities.map(cloneEntity) };
+    });
     const lineTypeScale =
       Number.isFinite(json.lineTypeScale) && json.lineTypeScale > 0 ? json.lineTypeScale : DEFAULT_LINETYPE_SCALE;
     // 点スタイルは省略可。壊れた値は既定へ落とす（描けなくならないように）
@@ -337,6 +419,7 @@ export class CadDocument {
     this.pointStyle = pointStyle;
     this.entityList = entities;
     this.layouts = layouts;
+    this.blocks = blocks;
     // id は用紙空間の図形・ビューポートとも重ならないよう、全体の最大から続ける
     const maxId = [
       ...this.entityList,
@@ -350,7 +433,7 @@ export class CadDocument {
   }
 
   private afterMutate(): void {
-    this.indexDirty = true;
+    this.markGeometryDirty();
     for (const id of [...this.selection]) {
       if (!this.entityList.some((e) => e.id === id)) this.selection.delete(id);
     }

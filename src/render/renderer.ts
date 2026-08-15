@@ -9,8 +9,9 @@
 import type { Aabb, Vec2 } from '../core/geometry.js';
 import type { CadView } from '../core/view.js';
 import type { CadDocument } from '../core/document.js';
-import type { DimEntity, Entity, TextEntity } from '../core/entity.js';
+import type { DimEntity, Entity, HatchEntity, ImageEntity, TextEntity } from '../core/entity.js';
 import { TEXT_LINE_GAP, angleToPoint, flatten, rectCorners } from '../core/entity.js';
+import { hatchSegments } from '../core/hatch.js';
 import { dimGeometry } from '../core/dim-geom.js';
 import { effectiveColor, effectiveLineStyle, isLightBackground, type ColorContext } from '../core/layer.js';
 import { dashArrayPx, lineWidthPx, printLineWidthPx } from './linetype.js';
@@ -122,9 +123,31 @@ export class Renderer {
     if (opts.showAxis) this.drawAxis(view, opts);
 
     const visible = doc.visibleIn(view.visibleWorld());
+    // 画像は常に最背面（線や文字を隠さない）
     for (const e of visible) {
+      if (e.kind !== 'image') continue;
+      this.drawImage(e, view);
+    }
+    for (const e of visible) {
+      if (e.kind === 'image') continue;
       const highlight = opts.monochrome ? '#000000' : doc.selection.has(e.id) ? opts.selectionColor : undefined;
+      // 挿入は中身を展開して描く（属性は中身のものを使う）
+      if (e.kind === 'insert') {
+        for (const x of doc.explode(e)) {
+          this.drawEntity(x, view, doc, colorCtx, highlight, false, opts.lineWidthPxPerMm);
+        }
+        continue;
+      }
       this.drawEntity(e, view, doc, colorCtx, highlight, false, opts.lineWidthPxPerMm);
+    }
+    // 選択された画像だけは枠を見せる（選んだことが分かるように）
+    for (const e of visible) {
+      if (e.kind !== 'image' || !doc.selection.has(e.id)) continue;
+      ctx.save();
+      ctx.strokeStyle = opts.selectionColor;
+      ctx.lineWidth = 1;
+      this.strokePath(rectCorners({ ...e, kind: 'rect' }).map((p) => view.toScreen(p)), true);
+      ctx.restore();
     }
 
     if (opts.preview) {
@@ -336,6 +359,15 @@ export class Renderer {
       case 'text':
         this.drawText(e, view, color);
         break;
+      case 'hatch':
+        this.drawHatch(e, view, color);
+        break;
+      case 'image':
+        this.drawImage(e, view);
+        break;
+      case 'insert':
+        // 展開して描くのは `draw` の役目。ここへは来ない
+        break;
       case 'dim':
         this.drawDim(e, view, color);
         break;
@@ -463,6 +495,77 @@ export class Renderer {
       ctx.fillText(lines[i]!, 0, i * lead);
     }
     ctx.restore();
+  }
+
+  /**
+   * ハッチ。`solid` は境界を塗り、それ以外は走査線を引く。
+   * 線分は `hatch.ts` が毎回作る（境界を動かせば塗りも追従する）。
+   */
+  private drawHatch(e: HatchEntity, view: CadView, color: string): void {
+    const ctx = this.ctx;
+    if (e.points.length < 3) return;
+    const screen = e.points.map((p) => view.toScreen(p));
+
+    if (e.pattern === 'solid') {
+      ctx.beginPath();
+      ctx.moveTo(screen[0]!.x, screen[0]!.y);
+      for (let i = 1; i < screen.length; i++) ctx.lineTo(screen[i]!.x, screen[i]!.y);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+      return;
+    }
+
+    ctx.setLineDash([]); // 塗りの線は線種の刻みを持たない
+    for (const [a, b] of hatchSegments(e)) {
+      this.strokePath([view.toScreen(a), view.toScreen(b)], false);
+    }
+    // 境界も薄く見せる（掴む手がかり）
+    this.strokePath(screen, true);
+  }
+
+  /**
+   * ラスタ画像。
+   *
+   * **バイト列から作った `Image` はフレームをまたいでキャッシュする。**
+   * 毎フレーム作り直すと復号が走って描画が止まる。読み込みが終わるまでは
+   * 何も描かず、終わったら次のフレームで出る。
+   */
+  private drawImage(e: ImageEntity, view: CadView): void {
+    const img = this.imageFor(e.dataUrl);
+    if (!img || !img.complete || img.naturalWidth === 0) return;
+    const a = view.toScreen({ x: Math.min(e.a.x, e.b.x), y: Math.max(e.a.y, e.b.y) });
+    const b = view.toScreen({ x: Math.max(e.a.x, e.b.x), y: Math.min(e.a.y, e.b.y) });
+    const w = b.x - a.x;
+    const h = b.y - a.y;
+    if (!(w > 0) || !(h > 0)) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, Math.max(0, e.opacity));
+    ctx.drawImage(img, a.x, a.y, w, h);
+    ctx.restore();
+  }
+
+  private readonly imageCache = new Map<string, HTMLImageElement>();
+
+  /**
+   * 画像の読み込みが終わったときに呼ぶ。
+   *
+   * **これが無いと、置いた画像は次に何か操作するまで画面に出ない**
+   * （復号が終わっても描き直しが起きないため）。`CadApp` が再描画を繋ぐ。
+   */
+  onImageLoad: (() => void) | null = null;
+
+  private imageFor(dataUrl: string): HTMLImageElement | null {
+    if (dataUrl === '') return null;
+    const hit = this.imageCache.get(dataUrl);
+    if (hit) return hit;
+    if (typeof Image === 'undefined') return null; // テスト（DOM なし）では描かない
+    const img = new Image();
+    img.addEventListener('load', () => this.onImageLoad?.());
+    img.src = dataUrl;
+    this.imageCache.set(dataUrl, img);
+    return img;
   }
 
   /**
