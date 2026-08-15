@@ -345,6 +345,47 @@ describe('誤差の判定（confirmGosa・デスクトップ版 MawarikenRow の
       expect(g('123456.050', 123456).mm).toBe(50);
     });
   });
+
+  /**
+   * **判定はデスクトップ版と一致させる。**
+   *
+   * `MawarikenRow.ConfirmGosa`（`SurveyInput.cs`）は
+   * `(int)Math.Round(|m − calc| × 1000, AwayFromZero)` と **mm の整数**にしてから
+   * しきい値と比べている。μm まで見ると 20.4mm が Web では金・向こうでは水色に
+   * 分かれてしまうので、こちらも mm 整数へ丸める。
+   */
+  describe('mm 整数へ丸めてから判定する（デスクトップ版と同じ）', () => {
+    it('20.4mm は水色（20 に丸まる）', () => {
+      expect(g('10.0204', 10).level).toBe('ok');
+      expect(g('10.0204', 10).mm).toBe(20);
+    });
+
+    it('20.6mm は金（21 に丸まる）', () => {
+      expect(g('10.0206', 10).level).toBe('warn');
+      expect(g('10.0206', 10).mm).toBe(21);
+    });
+
+    it('50.4mm は金（50 に丸まる）', () => {
+      expect(g('10.0504', 10).level).toBe('warn');
+      expect(g('10.0504', 10).mm).toBe(50);
+    });
+
+    it('50.6mm は Over（51 に丸まる）', () => {
+      expect(g('10.0506', 10).level).toBe('ng');
+      expect(g('10.0506', 10).text).toBe('Over');
+    });
+
+    /** ちょうど 0.5 は上へ（C# の AwayFromZero と一致。絶対値なので符号の差は出ない）。 */
+    it('20.5mm は金（21 へ上がる）', () => {
+      expect(g('10.0205', 10).mm).toBe(21);
+      expect(g('10.0205', 10).level).toBe('warn');
+    });
+
+    it('誤差の表示は常に mm 整数を m にしたもの', () => {
+      expect(g('10.0204', 10).text).toBe('0.020');
+      expect(g('10.0206', 10).text).toBe('0.021');
+    });
+  });
 });
 
 describe('incompleteCount', () => {
