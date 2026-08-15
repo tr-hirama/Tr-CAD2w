@@ -20,7 +20,9 @@ export type ToolName =
   | 'point'
   | 'text'
   | 'move'
-  | 'copy';
+  | 'copy'
+  /** 用紙空間で「紙に開ける窓」を 2 クリックの矩形で作る。 */
+  | 'viewport';
 
 export const TOOL_LABEL: Record<ToolName, string> = {
   select: '選択',
@@ -33,6 +35,7 @@ export const TOOL_LABEL: Record<ToolName, string> = {
   text: '文字',
   move: '移動',
   copy: '複写',
+  viewport: 'ビューポート',
 };
 
 /** ツールのショートカット（デスクトップ版 TrCad2D と同じ割当）。 */
@@ -198,6 +201,7 @@ export function requiredPoints(name: ToolName): number | null {
     case 'circle':
     case 'move':
     case 'copy':
+    case 'viewport':
       return 2;
     case 'arc':
       return 3;
@@ -231,5 +235,7 @@ export function promptFor(name: ToolName, collected: number): string {
       return collected === 0 ? '基点をクリック' : '移動先をクリック';
     case 'copy':
       return collected === 0 ? '基点をクリック' : '複写先をクリック';
+    case 'viewport':
+      return collected === 0 ? '窓の1つ目の角をクリック（用紙空間）' : '窓の対角をクリック';
   }
 }
