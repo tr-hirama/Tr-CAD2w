@@ -15,6 +15,7 @@
  * | `Kind: "Polyline"` + `Pts[2n]` | `polyline` | **閉合フラグが無い**（下記） |
  * | `Kind: "Text"` + `Pts[2]` + `Text/Height/Rotation`（**度**）`/Align/VAlign` | `text` | |
  * | `Kind: "Point"` + `Pts[2]` | `point` | |
+ * | `Kind: "Dimension"` + `Pts[2n]` + `DimType/Height/DimArrow/DimDecimals/DimScale/DimSuffix/DimText` | `dim` | `DimType` 省略＝`Linear` |
  * | `Color`（`0xAARRGGBB`） | `color`（`#rrggbb`） | **画層色と同じなら ByLayer(null)** にする |
  * | `LineType`（`Continuous`…） | `lineStyle`（`solid`…） | 1 対 1 |
  * | `LineWeight`（mm） | `lineWidth`（mm） | そのまま |
@@ -24,7 +25,7 @@
  *
  * | 向き | 落ちるもの |
  * |---|---|
- * | tc2 → Web | ハッチ・ブロック(Insert)・画像・寸法（**件数を報告**）、測量データ（観測/座標/まわりけん/レベル/座標変換）、概要・コメント・メモ、用紙空間、グループ、ブロック定義 |
+ * | tc2 → Web | ハッチ・ブロック(Insert)・画像（**件数を報告**）、測量データ（観測/座標/まわりけん/レベル/座標変換）、概要・コメント・メモ、用紙空間、グループ、ブロック定義 |
  * | Web → tc2 | 画層の**線種**（デスクトップ版の `LayerDto` は色と表示のみ）、用紙空間 |
  *
  * ## 閉じた連続線
@@ -36,7 +37,7 @@
 
 import type { DocumentJson } from '../core/document.js';
 import { DEFAULT_LINETYPE_SCALE, FILE_FORMAT_VERSION } from '../core/document.js';
-import type { Entity, LineStyleName, NewEntity, TextEntity } from '../core/entity.js';
+import type { DimType, Entity, LineStyleName, NewEntity, TextEntity } from '../core/entity.js';
 import { dist, rad, vec, type Vec2 } from '../core/geometry.js';
 import { deg } from '../core/geometry.js';
 import type { Layer } from '../core/layer.js';
@@ -68,6 +69,12 @@ export interface Tc2EntityDto {
   ArcEnd?: number;
   Align?: string | null;
   VAlign?: string | null;
+  DimType?: string | null;
+  DimArrow?: number;
+  DimDecimals?: number;
+  DimScale?: number;
+  DimSuffix?: string | null;
+  DimText?: string | null;
 }
 
 export interface Tc2DocDto {
@@ -105,6 +112,21 @@ const VALIGN_TO_V: Readonly<Record<string, TextEntity['vAlign']>> = {
   Bottom: 'bottom',
   Middle: 'middle',
   Top: 'top',
+};
+
+/** デスクトップ版 `DimType`（省略＝`Linear`）⇔ Web 版 `dimType`。 */
+const DIM_TYPE_TO_WEB: Readonly<Record<string, DimType>> = {
+  Linear: 'linear',
+  Radius: 'radius',
+  Diameter: 'diameter',
+  Angular: 'angular',
+};
+
+const DIM_TYPE_TO_TC2: Record<DimType, string> = {
+  linear: 'Linear',
+  radius: 'Radius',
+  diameter: 'Diameter',
+  angular: 'Angular',
 };
 
 const H_TO_ALIGN: Record<TextEntity['hAlign'], string> = { left: 'Left', center: 'Center', right: 'Right' };
@@ -278,9 +300,31 @@ function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntit
         vAlign: VALIGN_TO_V[d.VAlign ?? 'Baseline'] ?? 'baseline',
       };
     }
+    case 'Dimension': {
+      const dimType = DIM_TYPE_TO_WEB[d.DimType ?? 'Linear'] ?? 'linear';
+      // 直線・角度は 3 点、半径・直径は 2 点そろっていないと幾何が作れない
+      const need = dimType === 'radius' || dimType === 'diameter' ? 2 : 3;
+      if (points.length < need) return null;
+      return {
+        ...base,
+        kind: 'dim',
+        dimType,
+        points,
+        height: numberOr(d.Height, 0),
+        arrow: numberOr(d.DimArrow, 0),
+        decimals: Math.round(numberOr(d.DimDecimals, 2)),
+        measureScale: numberOr(d.DimScale, 1),
+        suffix: d.DimSuffix ?? '',
+        text: d.DimText ?? '',
+      };
+    }
     default:
-      return null; // Hatch / Insert / Image / Dimension など
+      return null; // Hatch / Insert / Image など
   }
+}
+
+function numberOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
 /** Web 版の `DocumentJson` → デスクトップ版の JSON（`DocDto`）。 */
@@ -351,6 +395,19 @@ function toTc2Entity(e: Entity, layerColor: Map<string, number>): Tc2EntityDto |
         Rotation: normalizeDegrees(deg(e.rotation)),
         Align: H_TO_ALIGN[e.hAlign],
         VAlign: V_TO_VALIGN[e.vAlign],
+      };
+    case 'dim':
+      return {
+        ...base,
+        Kind: 'Dimension',
+        Pts: e.points.flatMap((p) => [p.x, p.y]),
+        Height: e.height,
+        DimType: DIM_TYPE_TO_TC2[e.dimType],
+        DimArrow: e.arrow,
+        DimDecimals: e.decimals,
+        DimScale: e.measureScale,
+        DimSuffix: e.suffix,
+        DimText: e.text,
       };
   }
 }
