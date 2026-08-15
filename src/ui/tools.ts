@@ -20,7 +20,13 @@ export type ToolName =
   | 'point'
   | 'text'
   | 'move'
-  | 'copy';
+  | 'copy'
+  /** 閉じた図形をクリックして塗る。 */
+  | 'hatch'
+  /** ブロックを置く位置をクリックする。 */
+  | 'insert'
+  /** 画像を置く矩形を 2 クリックで決める。 */
+  | 'image';
 
 export const TOOL_LABEL: Record<ToolName, string> = {
   select: '選択',
@@ -33,6 +39,9 @@ export const TOOL_LABEL: Record<ToolName, string> = {
   text: '文字',
   move: '移動',
   copy: '複写',
+  hatch: 'ハッチ',
+  insert: 'ブロック挿入',
+  image: '画像挿入',
 };
 
 /** ツールのショートカット（デスクトップ版 TrCad2D と同じ割当）。 */
@@ -182,6 +191,7 @@ export class DrawTool {
         ];
       }
       default:
+        // ハッチ・ブロック挿入・画像は図面やファイルが要るので `CadApp` 側で作る
         return null;
     }
   }
@@ -198,9 +208,14 @@ export function requiredPoints(name: ToolName): number | null {
     case 'circle':
     case 'move':
     case 'copy':
+    case 'image':
       return 2;
     case 'arc':
       return 3;
+    // 閉図形／挿入位置を 1 クリックで決める（作るのは CadApp 側）
+    case 'hatch':
+    case 'insert':
+      return 1;
     case 'polyline':
       return null;
     case 'select':
@@ -231,5 +246,11 @@ export function promptFor(name: ToolName, collected: number): string {
       return collected === 0 ? '基点をクリック' : '移動先をクリック';
     case 'copy':
       return collected === 0 ? '基点をクリック' : '複写先をクリック';
+    case 'hatch':
+      return '塗る閉じた図形（矩形・円・閉じた連続線）をクリック';
+    case 'insert':
+      return 'ブロックを置く位置をクリック';
+    case 'image':
+      return collected === 0 ? '画像を置く1つ目の角をクリック' : '対角をクリック';
   }
 }

@@ -36,7 +36,9 @@
 
 import type { DocumentJson } from '../core/document.js';
 import { DEFAULT_LINETYPE_SCALE, FILE_FORMAT_VERSION } from '../core/document.js';
-import type { Entity, LineStyleName, NewEntity, TextEntity } from '../core/entity.js';
+import type { Entity, HatchPattern, LineStyleName, NewEntity, TextEntity } from '../core/entity.js';
+import { DEFAULT_HATCH_SPACING } from '../core/hatch.js';
+import type { BlockDef } from '../core/block.js';
 import { dist, rad, vec, type Vec2 } from '../core/geometry.js';
 import { deg } from '../core/geometry.js';
 import type { Layer } from '../core/layer.js';
@@ -68,6 +70,19 @@ export interface Tc2EntityDto {
   ArcEnd?: number;
   Align?: string | null;
   VAlign?: string | null;
+  Hatch?: string | null;
+  HatchSpacing?: number;
+  Block?: string | null;
+  Scale?: number;
+  ScaleY?: number;
+  Img?: string | null;
+  ImgOpacity?: number;
+}
+
+/** デスクトップ版 `BlockDto`（名前と中身）。 */
+export interface Tc2BlockDto {
+  Name: string;
+  Entities: Tc2EntityDto[];
 }
 
 export interface Tc2DocDto {
@@ -75,6 +90,7 @@ export interface Tc2DocDto {
   CurrentLayer: string;
   Entities: Tc2EntityDto[];
   LtScale?: number | null;
+  Blocks?: Tc2BlockDto[] | null;
   [key: string]: unknown; // 測量データなど、Web 版が使わない項目はそのまま無視する
 }
 
@@ -105,6 +121,23 @@ const VALIGN_TO_V: Readonly<Record<string, TextEntity['vAlign']>> = {
   Bottom: 'bottom',
   Middle: 'middle',
   Top: 'top',
+};
+
+/** デスクトップ版 `HatchPattern` ⇔ Web 版 `pattern`。 */
+const HATCH_TO_WEB: Readonly<Record<string, HatchPattern>> = {
+  Solid: 'solid',
+  Line45: 'line45',
+  Line135: 'line135',
+  Cross: 'cross',
+  Grid: 'grid',
+};
+
+const HATCH_TO_TC2: Record<HatchPattern, string> = {
+  solid: 'Solid',
+  line45: 'Line45',
+  line135: 'Line135',
+  cross: 'Cross',
+  grid: 'Grid',
 };
 
 const H_TO_ALIGN: Record<TextEntity['hAlign'], string> = { left: 'Left', center: 'Center', right: 'Right' };
@@ -205,18 +238,28 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
     droppedSections.push(label);
   }
 
+  // ブロック定義（挿入の中身）。中の図形にも同じ変換をかける
+  const blocks: BlockDef[] = [];
+  for (const b of dto.Blocks ?? []) {
+    if (typeof b?.Name !== 'string' || !Array.isArray(b.Entities)) continue;
+    const inner: Entity[] = [];
+    for (const d of b.Entities) {
+      const built = buildEntity(d, layerColor);
+      if (built) inner.push({ ...built, id: id++ } as Entity);
+    }
+    blocks.push({ name: b.Name, entities: inner });
+  }
+
   const ltScale = typeof dto.LtScale === 'number' && dto.LtScale > 0 ? dto.LtScale : DEFAULT_LINETYPE_SCALE;
-  return {
-    json: {
-      format: 'tr-cad2w',
-      version: FILE_FORMAT_VERSION,
-      lineTypeScale: ltScale,
-      layers,
-      entities,
-    },
-    skipped,
-    droppedSections,
+  const json: DocumentJson = {
+    format: 'tr-cad2w',
+    version: FILE_FORMAT_VERSION,
+    lineTypeScale: ltScale,
+    layers,
+    entities,
   };
+  if (blocks.length > 0) json.blocks = blocks;
+  return { json, skipped, droppedSections };
 }
 
 function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntity | null {
@@ -278,9 +321,48 @@ function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntit
         vAlign: VALIGN_TO_V[d.VAlign ?? 'Baseline'] ?? 'baseline',
       };
     }
+    case 'Hatch': {
+      if (points.length < 3) return null;
+      return {
+        ...base,
+        kind: 'hatch',
+        points,
+        pattern: HATCH_TO_WEB[d.Hatch ?? 'Solid'] ?? 'solid',
+        spacing: numberOr(d.HatchSpacing, DEFAULT_HATCH_SPACING),
+      };
+    }
+    case 'Insert': {
+      const name = d.Block ?? '';
+      if (points.length < 1 || name === '') return null;
+      return {
+        ...base,
+        kind: 'insert',
+        blockName: name,
+        at: points[0]!,
+        scale: numberOr(d.Scale, 1),
+        scaleY: numberOr(d.ScaleY, 0),
+        rotation: rad(numberOr(d.Rotation, 0)),
+      };
+    }
+    case 'Image': {
+      const img = d.Img ?? '';
+      if (points.length < 2 || img === '') return null;
+      return {
+        ...base,
+        kind: 'image',
+        a: points[0]!,
+        b: points[1]!,
+        dataUrl: dataUrlOfBase64(img),
+        opacity: numberOr(d.ImgOpacity, 1),
+      };
+    }
     default:
-      return null; // Hatch / Insert / Image / Dimension など
+      return null; // Dimension など、まだ対応していない種別
   }
+}
+
+function numberOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
 /** Web 版の `DocumentJson` → デスクトップ版の JSON（`DocDto`）。 */
@@ -298,12 +380,21 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     if (dto) entities.push(dto);
   }
 
-  return {
+  const out: Tc2DocDto = {
     Layers: layers,
     CurrentLayer: '0',
     Entities: entities,
     LtScale: json.lineTypeScale,
   };
+
+  const blocks = json.blocks ?? [];
+  if (blocks.length > 0) {
+    out.Blocks = blocks.map((b) => ({
+      Name: b.name,
+      Entities: b.entities.map((e) => toTc2Entity(e, layerColor)).filter((x): x is Tc2EntityDto => x !== null),
+    }));
+  }
+  return out;
 }
 
 function toTc2Entity(e: Entity, layerColor: Map<string, number>): Tc2EntityDto | null {
@@ -352,7 +443,53 @@ function toTc2Entity(e: Entity, layerColor: Map<string, number>): Tc2EntityDto |
         Align: H_TO_ALIGN[e.hAlign],
         VAlign: V_TO_VALIGN[e.vAlign],
       };
+    case 'hatch':
+      if (e.points.length < 3) return null;
+      return {
+        ...base,
+        Kind: 'Hatch',
+        Pts: e.points.flatMap((p) => [p.x, p.y]),
+        Hatch: HATCH_TO_TC2[e.pattern],
+        HatchSpacing: e.spacing,
+      };
+    case 'insert':
+      return {
+        ...base,
+        Kind: 'Insert',
+        Pts: [e.at.x, e.at.y],
+        Block: e.blockName,
+        Scale: e.scale,
+        ScaleY: e.scaleY,
+        Rotation: normalizeDegrees(deg(e.rotation)),
+      };
+    case 'image':
+      return {
+        ...base,
+        Kind: 'Image',
+        Pts: [e.a.x, e.a.y, e.b.x, e.b.y],
+        // デスクトップ版は「素の base64」で持つ（data URL ではない）
+        Img: base64OfDataUrl(e.dataUrl),
+        ImgOpacity: e.opacity,
+      };
   }
+}
+
+/** `data:image/png;base64,XXXX` → `XXXX`。すでに素の base64 ならそのまま。 */
+export function base64OfDataUrl(dataUrl: string): string {
+  const i = dataUrl.indexOf('base64,');
+  return i >= 0 ? dataUrl.slice(i + 'base64,'.length) : dataUrl;
+}
+
+/**
+ * 素の base64 → `data:...;base64,...`。
+ *
+ * デスクトップ版は画像の種類を持たないので、**先頭のバイトから見分ける**
+ * （PNG は `\x89PNG`＝base64 で `iVBORw0KGgo`、JPEG は `\xff\xd8\xff`＝`/9j/`）。
+ */
+export function dataUrlOfBase64(b64: string): string {
+  if (b64.startsWith('data:')) return b64;
+  const mime = b64.startsWith('/9j/') ? 'image/jpeg' : b64.startsWith('R0lGOD') ? 'image/gif' : 'image/png';
+  return `data:${mime};base64,${b64}`;
 }
 
 function normalizeDegrees(d: number): number {

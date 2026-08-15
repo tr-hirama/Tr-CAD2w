@@ -26,7 +26,9 @@
 
 import type { DocumentJson } from '../core/document.js';
 import type { Entity, LineStyleName, TextEntity } from '../core/entity.js';
-import { entityBounds } from '../core/entity.js';
+import { entityBounds, rectCorners } from '../core/entity.js';
+import { hatchSegments } from '../core/hatch.js';
+import { explodeInsert, type BlockDef } from '../core/block.js';
 import type { Layer } from '../core/layer.js';
 import { parseColor, type Rgb } from '../core/layer.js';
 import { EMPTY_AABB, aabbUnion, deg } from '../core/geometry.js';
@@ -258,9 +260,13 @@ export function documentToDxf(json: DocumentJson): string {
     paperBlockRecord0: body.handle(),
   };
 
+  // 挿入は中身へ展開してから出す（DXF の BLOCK/INSERT は作らない。
+  // 受け側で見た目が変わらないよう、実体だけを渡す割り切り）
+  const flat = flattenInserts(json);
+
   writeTables(body, json, h);
   writeBlocks(body);
-  writeEntities(body, json.entities);
+  writeEntities(body, flat);
   writeObjects(body, h);
 
   // $HANDSEED はハンドルを使い切ってからでないと決まらないので HEADER は最後に組む
@@ -270,8 +276,21 @@ export function documentToDxf(json: DocumentJson): string {
   return head.text() + body.text() + ['0', 'EOF', ''].join('\n');
 }
 
+/** 挿入をブロック定義から展開して並べる（定義が無い挿入は落ちる）。 */
+function flattenInserts(json: DocumentJson): Entity[] {
+  const blocks = json.blocks ?? [];
+  if (blocks.length === 0) return json.entities.filter((e) => e.kind !== 'insert');
+  const src = { getBlock: (name: string): BlockDef | undefined => blocks.find((b) => b.name === name) };
+  const out: Entity[] = [];
+  for (const e of json.entities) {
+    if (e.kind === 'insert') out.push(...explodeInsert(src, e));
+    else out.push(e);
+  }
+  return out;
+}
+
 function writeHeader(w: DxfWriter, json: DocumentJson, handleSeed: string): void {
-  const box = json.entities.reduce((acc, e) => aabbUnion(acc, entityBounds(e)), EMPTY_AABB);
+  const box = flattenInserts(json).reduce((acc, e) => aabbUnion(acc, entityBounds(e)), EMPTY_AABB);
   const hasExtents = box.minX <= box.maxX;
 
   w.pair(0, 'SECTION');
@@ -736,6 +755,33 @@ function writeEntity(w: DxfWriter, e: Entity): void {
     case 'text':
       if (e.text.includes('\n') || e.text.includes('\r')) writeMText(w, e);
       else writeText(w, e);
+      break;
+
+    case 'hatch': {
+      // DXF の HATCH は境界とパターン定義が要り、受け側で見た目が変わりやすい。
+      // **境界＋走査線を実体で出す**（デスクトップ版も同じ割り切り）
+      writeLwPolyline(w, e, e.points, true);
+      for (const [a, b] of hatchSegments(e)) {
+        w.pair(0, 'LINE');
+        writeCommon(w, e, 'AcDbLine');
+        w.pair(10, a.x);
+        w.pair(20, a.y);
+        w.pair(30, 0);
+        w.pair(11, b.x);
+        w.pair(21, b.y);
+        w.pair(31, 0);
+      }
+      break;
+    }
+
+    case 'image':
+      // ラスタ画像は DXF に埋め込めない（IMAGEDEF は外部ファイル参照）。
+      // 外部ファイルを作らない方針なので、配置枠だけを出す
+      writeLwPolyline(w, e, rectCorners({ ...e, kind: 'rect' }), true);
+      break;
+
+    case 'insert':
+      // `documentToDxf` が先に展開している（ここへは来ない）
       break;
   }
 }

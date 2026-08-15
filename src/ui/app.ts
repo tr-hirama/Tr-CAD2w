@@ -12,18 +12,25 @@
  */
 
 import { CadView } from '../core/view.js';
-import { CadDocument } from '../core/document.js';
+import { CadDocument, type DocumentJson } from '../core/document.js';
 import { Renderer, DEFAULT_RENDER, type RenderOptions, type RenderStats } from '../render/renderer.js';
 import { DEFAULT_SNAP, SNAP_LABEL, applyGrid, findSnap, type SnapResult, type SnapSettings } from '../core/snap.js';
-import { aabbFromCorners, dist, sub, vec, type Vec2 } from '../core/geometry.js';
+import { EMPTY_AABB, aabbFromCorners, aabbUnion, dist, rad, sub, vec, type Vec2 } from '../core/geometry.js';
 import {
+  DEFAULT_HATCH_STYLE,
   cloneEntity,
   entityArea,
+  entityBounds,
   entityLength,
+  flatten,
+  pointInPolygon,
   translateEntity,
   type Entity,
+  type HatchPattern,
   type NewEntity,
 } from '../core/entity.js';
+import { HATCH_PATTERN_LABEL, boundaryOf } from '../core/hatch.js';
+import { makeBlock } from '../core/block.js';
 import { DEFAULT_DRAW_ATTRS, DrawTool, TOOL_KEYS, TOOL_LABEL, promptFor, type DrawAttrs, type ToolName } from './tools.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import {
@@ -86,6 +93,9 @@ export class CadApp {
     },
   ) {
     this.renderer = new Renderer(canvas);
+    // 画像は復号が終わってから描ける。終わったら描き直す
+    // （繋がないと、置いた画像が次の操作まで画面に出ない）
+    this.renderer.onImageLoad = () => this.markDirty();
     this.bindPointer();
     this.bindKeyboard();
     this.bindToolbar();
@@ -274,6 +284,204 @@ export class CadApp {
       this.setStatus(`.tc2 を書き出せませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  // ---- ハッチ・ブロック・画像 --------------------------------------------
+
+  /** 次に作るハッチのパターンと間隔（ツールバーから変える）。 */
+  hatchStyle = { ...DEFAULT_HATCH_STYLE };
+
+  /** 挿入するブロックの名前（`insert` ツールが使う）。 */
+  currentBlock = '';
+
+  /**
+   * 閉じた図形をクリックして塗る。
+   * 境界は図形の折れ線展開から採る（矩形・円・閉じた連続線・ハッチ）。
+   */
+  private handleHatchClick(p: Vec2): void {
+    // 線の上を押しても、囲まれた内側を押しても塗れるようにする
+    const hit = this.doc.pick(p, this.view.toWorldLen(6)) ?? this.enclosingShape(p);
+    if (!hit) {
+      this.setStatus('塗る図形をクリックしてください');
+      return;
+    }
+    const boundary = boundaryOf(hit.kind === 'hatch' ? [hit.points] : flatten(hit, 96));
+    if (!boundary) {
+      this.setStatus(`${TOOL_LABEL['hatch']}にできない図形です（閉じた矩形・円・連続線を選んでください）`);
+      return;
+    }
+    this.doc.beginEdit();
+    const created = this.doc.add({
+      layer: this.attrs.layer,
+      color: this.attrs.color,
+      lineStyle: this.attrs.lineStyle,
+      lineWidth: this.attrs.lineWidth,
+      kind: 'hatch',
+      points: boundary,
+      pattern: this.hatchStyle.pattern,
+      spacing: this.hatchStyle.spacing,
+    });
+    // 塗りは境界の下に置く（線を隠さない）
+    this.doc.sendToBack([created.id]);
+    this.doc.selection.clear();
+    this.doc.selection.add(created.id);
+    this.setStatus(
+      `${HATCH_PATTERN_LABEL[this.hatchStyle.pattern]}で塗りました（間隔 ${this.hatchStyle.spacing}mm・計 ${this.doc.count} 図形）`,
+    );
+    this.markDirty();
+  }
+
+  /**
+   * 点を囲んでいる閉じた図形のうち、いちばん手前のもの。
+   * 塗るときに「囲まれた中を押す」操作を通すために使う。
+   */
+  private enclosingShape(p: Vec2): Entity | undefined {
+    const candidates = this.doc.visibleIn({ minX: p.x, minY: p.y, maxX: p.x, maxY: p.y });
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const e = candidates[i]!;
+      if (e.kind === 'polyline' && !e.closed) continue;
+      const ring = e.kind === 'hatch' ? e.points : boundaryOf(flatten(e, 96));
+      if (ring && pointInPolygon(ring, p)) return e;
+    }
+    return undefined;
+  }
+
+  /** ハッチのパターンを順に切り替える。 */
+  cycleHatchPattern(): void {
+    const order: HatchPattern[] = ['solid', 'line45', 'line135', 'cross', 'grid'];
+    const i = order.indexOf(this.hatchStyle.pattern);
+    const next = order[(i + 1) % order.length]!;
+    this.hatchStyle = { ...this.hatchStyle, pattern: next };
+    this.setStatus(`ハッチのパターン: ${HATCH_PATTERN_LABEL[next]}`);
+    this.updateToolbar();
+  }
+
+  /**
+   * 別図面（`.tc2w` / `.tc2` / DXF）をブロックとして読み込む。
+   * 読んだ中身は**挿入点を原点に寄せて**ブロック定義にする。
+   */
+  async importBlock(): Promise<void> {
+    const picked = await pickFile();
+    if (!picked) return;
+    try {
+      const json = await readAnyDrawing(picked);
+      if (json.entities.length === 0) throw new Error('読める図形がありませんでした');
+      // 図面の左下が原点に来るよう寄せる（挿入点が図形の隅になって扱いやすい）
+      let box = EMPTY_AABB;
+      for (const e of json.entities) box = aabbUnion(box, entityBounds(e));
+      const d = vec(-box.minX, -box.minY);
+      const entities = json.entities.map((e: Entity) => translateEntity(cloneEntity(e), d));
+      const name = picked.name.replace(/\.[^.]+$/, '');
+      this.doc.beginEdit();
+      this.doc.setBlock(makeBlock(name, entities));
+      this.currentBlock = name;
+      this.setTool('insert');
+      this.setStatus(`ブロック「${name}」を読み込みました（${entities.length} 図形）。置く位置をクリックしてください`);
+    } catch (err) {
+      this.setStatus(`ブロックを読めませんでした: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.markDirty();
+  }
+
+  /** ブロックを置く。倍率・回転はその場で聞く。 */
+  private handleInsertClick(p: Vec2): void {
+    const names = this.doc.blocks.map((b) => b.name);
+    if (names.length === 0) {
+      this.setStatus('先に「ブロック読込」で別図面を読み込んでください');
+      return;
+    }
+    const name = names.includes(this.currentBlock) ? this.currentBlock : names[0]!;
+    const scaleText = window.prompt(`「${name}」の倍率`, '1');
+    if (scaleText === null) return;
+    const rotText = window.prompt('回転角（度・反時計回り）', '0');
+    if (rotText === null) return;
+    const scale = Number(scaleText);
+    const rotation = Number(rotText);
+    if (!Number.isFinite(scale) || scale === 0 || !Number.isFinite(rotation)) {
+      this.setStatus('倍率と回転角は数値で入れてください（倍率 0 は不可）');
+      return;
+    }
+
+    this.doc.beginEdit();
+    const created = this.doc.add({
+      layer: this.attrs.layer,
+      color: this.attrs.color,
+      lineStyle: this.attrs.lineStyle,
+      lineWidth: this.attrs.lineWidth,
+      kind: 'insert',
+      blockName: name,
+      at: p,
+      scale,
+      scaleY: 0, // 0 = X と同じ（等倍）
+      rotation: rad(rotation),
+    });
+    this.doc.selection.clear();
+    this.doc.selection.add(created.id);
+    this.setStatus(`ブロック「${name}」を置きました（${this.doc.explode(created).length} 図形に展開）`);
+    this.markDirty();
+  }
+
+  /**
+   * 画像を選んで、次の 2 クリックで置く矩形を決める。
+   * **バイト列は図面に埋め込む**ので、元のファイルが無くても開ける。
+   */
+  async pickImage(): Promise<void> {
+    const picked = await pickFile('image/*');
+    if (!picked) return;
+    const mime = mimeOfImageName(picked.name);
+    if (!mime) {
+      this.setStatus('PNG / JPEG / GIF / WebP の画像を選んでください');
+      return;
+    }
+    this.pendingImage = { dataUrl: `data:${mime};base64,${base64OfBytes(picked.bytes)}`, name: picked.name };
+    this.setTool('image');
+    this.setStatus(`${picked.name} を置きます。2 点で配置する矩形をクリックしてください`);
+  }
+
+  /** 配置待ちの画像（`pickImage` で選び、2 クリックで確定する）。 */
+  private pendingImage: { dataUrl: string; name: string } | null = null;
+
+  private handleImageClick(p: Vec2): void {
+    if (!this.pendingImage) {
+      void this.pickImage();
+      return;
+    }
+    // 1 点目を覚え、2 点目で矩形を決める
+    if (this.imageCorners.length === 0) {
+      this.imageCorners = [p];
+      this.setStatus('対角をクリックしてください');
+      this.markDirty();
+      return;
+    }
+    const a = this.imageCorners[0]!;
+    this.imageCorners = [];
+    if (Math.abs(p.x - a.x) < 1e-9 || Math.abs(p.y - a.y) < 1e-9) {
+      this.setStatus('つぶれた矩形には置けません。離れた 2 点をクリックしてください');
+      return;
+    }
+    const img = this.pendingImage;
+    this.pendingImage = null;
+    this.doc.beginEdit();
+    const created = this.doc.add({
+      layer: this.attrs.layer,
+      color: this.attrs.color,
+      lineStyle: this.attrs.lineStyle,
+      lineWidth: this.attrs.lineWidth,
+      kind: 'image',
+      a,
+      b: p,
+      dataUrl: img.dataUrl,
+      opacity: 1,
+    });
+    // 画像は常に最背面
+    this.doc.sendToBack([created.id]);
+    this.doc.selection.clear();
+    this.doc.selection.add(created.id);
+    this.setStatus(`${img.name} を置きました（${Math.round(img.dataUrl.length / 1024)}KB を図面に埋め込み）`);
+    this.markDirty();
+  }
+
+  /** 画像ツールの 1 点目（2 点目が来たら矩形にする）。 */
+  private imageCorners: Vec2[] = [];
 
   newDocument(): void {
     this.doc.clear();
@@ -498,6 +706,19 @@ export class CadApp {
       return;
     }
 
+    if (this.tool.name === 'hatch') {
+      this.handleHatchClick(p);
+      return;
+    }
+    if (this.tool.name === 'insert') {
+      this.handleInsertClick(p);
+      return;
+    }
+    if (this.tool.name === 'image') {
+      this.handleImageClick(p);
+      return;
+    }
+
     if (this.tool.name === 'text' && this.tool.pointCount === 0) {
       const input = window.prompt('文字列', this.tool.pendingText || '');
       if (input === null || input === '') return;
@@ -631,6 +852,15 @@ export class CadApp {
           break;
         case 'print':
           this.openPrintDialog();
+          break;
+        case 'hatch-pattern':
+          this.cycleHatchPattern();
+          break;
+        case 'import-block':
+          void this.importBlock();
+          break;
+        case 'pick-image':
+          void this.pickImage();
           break;
         case 'undo':
           this.undo();
@@ -813,4 +1043,47 @@ export class CadApp {
 function isTypingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
   return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+}
+
+/**
+ * 図面ファイルを形式によらず読む（ブロック読込で使う）。
+ * **形式は拡張子ではなく中身で見分ける**（`.tc2` は ZIP）。
+ */
+async function readAnyDrawing(picked: PickedFile): Promise<DocumentJson> {
+  if (looksLikeZip(picked.bytes)) return (await readTc2(picked.bytes)).json;
+  if (/\.dxf$/i.test(picked.name)) return readDxfBytes(picked.bytes).json;
+  return deserialize(decodeUtf8(picked.bytes));
+}
+
+/** 画像のファイル名から MIME を決める。対応外は `null`。 */
+export function mimeOfImageName(name: string): string | null {
+  const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase();
+  switch (ext) {
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    default:
+      return null;
+  }
+}
+
+/**
+ * バイト列 → base64。
+ *
+ * `btoa(String.fromCharCode(...bytes))` は**引数が多すぎると落ちる**ので
+ * （画像は数十万バイトになる）、小分けにして繋ぐ。
+ */
+export function base64OfBytes(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let s = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(s);
 }

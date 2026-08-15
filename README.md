@@ -18,6 +18,9 @@
 ## いまできること
 
 - **作図**: 線 / 矩形 / 円 / 円弧 / 連続線 / 点 / 文字（複数行・揃え指定あり）
+- **ハッチング**: 閉じた図形（矩形 / 円 / 閉じた連続線）を塗る。塗りつぶし / 45° / 135° / クロス / 格子。**線の上でも囲まれた内側でもクリックで塗れる**。塗りは境界の下（最背面寄り）に入る
+- **ブロック挿入**: 別図面（`.tc2w` / `.tc2` / DXF）をブロックとして読み、位置・倍率・回転を指定して置く。**入れ子も展開し、循環参照は打ち切る**。展開した図形には「展開由来」の印が付く
+- **画像挿入**: PNG / JPEG / GIF / WebP を 2 点で配置。**バイト列を図面に埋め込む**ので元のファイルが無くても開ける。画像は常に最背面
 - **選択**: クリック / Shift+クリックで追加・解除 / 左ドラッグで矩形選択（**右→左は交差選択**）
 - **編集**: 移動・複写（基点→先の2クリック・点線プレビュー）・削除・Undo / Redo・重ね順（最前面 / 最背面）
 - **画層**: 標準画層（境界・道路・家屋・電柱ほか）の色と線種、表示 / 非表示、作図先の切替
@@ -38,8 +41,15 @@
 
 | 向き | 落ちるもの |
 |---|---|
-| **`.tc2` → Web** | ハッチ・ブロック（`Insert`）・画像・寸法（**開いたときに件数を表示**）、測量データ（観測 / 座標 / まわりけん / レベル / 座標変換）、概要・コメント・メモ、用紙空間、グループ |
+| **`.tc2` → Web** | 寸法（**開いたときに件数を表示**）、測量データ（観測 / 座標 / まわりけん / レベル / 座標変換）、概要・コメント・メモ、用紙空間、グループ |
 | **Web → `.tc2`** | 画層の**線種**（デスクトップ版の画層は色と表示だけ）、用紙空間 |
+
+ハッチ・ブロック（`Insert`＋ブロック定義）・画像は**双方向で往復します**。
+
+> **画像を入れた図面はファイルが大きくなります。** 画像は外部ファイルに頼らず
+> バイト列を図面に埋め込む（`.tc2w` は base64、`.tc2` はデスクトップ版と同じ素の base64）ため、
+> **元の画像ファイルのおよそ 1.33 倍**が図面に加算されます（`.tc2` は ZIP 圧縮で多少縮みますが、
+> JPEG / PNG は既に圧縮済みなのでほとんど縮みません）。
 
 デスクトップ版の連続線に**閉合フラグが無い**ため、閉じた連続線は「最後に始点を足す」形で書き出し、読むときは「最初と最後が同じ点なら閉じている」とみなします（往復は一致します）。
 
@@ -49,6 +59,8 @@
 |---|---|
 | `S` `L` `R` `C` `A` `P` `D` `T` | 選択 / 線 / 矩形 / 円 / 円弧 / 連続線 / 点 / 文字 |
 | ツールバーの **DXF書出** / **.tc2書出** | DXF（UTF-8 / R2007）/ デスクトップ版の .tc2 で書き出す |
+| ツールバーの **ハッチ** / **柄** | 閉じた図形を塗る / 塗りのパターンを切り替える |
+| ツールバーの **ブロック読込** / **ブロック挿入** / **画像** | 別図面をブロックとして読む / 置く / 画像を配置する |
 | `M` | 移動（基点→先の2クリック） |
 | ホイール | ズーム（カーソル位置固定） |
 | 中 / 右ドラッグ | パン |
@@ -88,6 +100,8 @@ npm run build
 | `src/core/view.ts` | ワールド⇔スクリーン変換、カーソル固定ズーム、全体表示 |
 | `src/core/entity.ts` | 図形要素（判別可能ユニオン）と範囲・ヒットテスト・変形・スナップ点・折れ線展開 |
 | `src/core/layer.ts` | **画層の色と線種の唯一の定義**。実効色（背景反転・暗背景の持ち上げ） |
+| `src/core/hatch.ts` | ハッチの線分生成（スキャンライン法）。**境界だけを保存し、線分は毎回作る** |
+| `src/core/block.ts` | ブロック挿入の展開（入れ子・循環参照ガード・`fromBlock` の印） |
 | `src/core/document.ts` | 図面（図形集合・選択・Undo・保存 / 読込） |
 | `src/core/spatial-index.ts` | 均一グリッドの空間インデックス |
 | `src/core/snap.ts` | オブジェクトスナップ・グリッド吸着・交点計算 |
@@ -114,7 +128,7 @@ npm run build
 | [M1 DXF入出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/1) | ~~[#1 読込](https://github.com/tr-hirama/Tr-CAD2w/issues/1)~~ / ~~[#2 書出（UTF-8）](https://github.com/tr-hirama/Tr-CAD2w/issues/2)~~ / [#3 往復の検証](https://github.com/tr-hirama/Tr-CAD2w/issues/3) / [#4 Shift-JIS 出力の判断](https://github.com/tr-hirama/Tr-CAD2w/issues/4) |
 | [M2 編集操作](https://github.com/tr-hirama/Tr-CAD2w/milestone/2) | [#5 トリム・延長・オフセット](https://github.com/tr-hirama/Tr-CAD2w/issues/5) / [#6 フィレット・面取り](https://github.com/tr-hirama/Tr-CAD2w/issues/6) / [#7 回転・拡縮・グループ・クリップボード](https://github.com/tr-hirama/Tr-CAD2w/issues/7) |
 | [M3 測量](https://github.com/tr-hirama/Tr-CAD2w/milestone/3) | [#8 座標入力・CSV](https://github.com/tr-hirama/Tr-CAD2w/issues/8) / [#9 観測ファイル取込](https://github.com/tr-hirama/Tr-CAD2w/issues/9) / [#10 自動結線](https://github.com/tr-hirama/Tr-CAD2w/issues/10) / [#11 トラバース・三斜求積](https://github.com/tr-hirama/Tr-CAD2w/issues/11) |
-| [M4 図面表現と出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/4) | [#12 寸法線](https://github.com/tr-hirama/Tr-CAD2w/issues/12) / [#13 ハッチ・ブロック・画像](https://github.com/tr-hirama/Tr-CAD2w/issues/13) / ~~[#14 印刷・PDF・用紙空間](https://github.com/tr-hirama/Tr-CAD2w/issues/14)~~ / ~~[#15 `.tc2` 相互運用](https://github.com/tr-hirama/Tr-CAD2w/issues/15)~~ / [#16 WebGL 描画](https://github.com/tr-hirama/Tr-CAD2w/issues/16) |
+| [M4 図面表現と出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/4) | [#12 寸法線](https://github.com/tr-hirama/Tr-CAD2w/issues/12) / ~~[#13 ハッチ・ブロック・画像](https://github.com/tr-hirama/Tr-CAD2w/issues/13)~~ / ~~[#14 印刷・PDF・用紙空間](https://github.com/tr-hirama/Tr-CAD2w/issues/14)~~ / ~~[#15 `.tc2` 相互運用](https://github.com/tr-hirama/Tr-CAD2w/issues/15)~~ / [#16 WebGL 描画](https://github.com/tr-hirama/Tr-CAD2w/issues/16) |
 
 改修は **issue1本＝ブランチ1本＝コミット1本＝PR1本**で進めます。手順は [.claude/skills/trcad2w-cycle/SKILL.md](.claude/skills/trcad2w-cycle/SKILL.md)。
 
