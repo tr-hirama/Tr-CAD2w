@@ -410,3 +410,20 @@ body {
   opacity: 0.75;
   line-height: 1.4;
 }
+
+/* まわりけんの誤差（デスクトップ版の 水色 / 金 / 赤 に対応） */
+#ken-panel .gosa-ok {
+  color: #2980b9;
+}
+#ken-panel .gosa-warn {
+  color: #b8860b;
+  font-weight: 600;
+}
+#ken-panel .gosa-ng {
+  color: #c0392b;
+  font-weight: 600;
+}
+#ken-panel .ken-note.warn {
+  opacity: 1;
+  color: #c0392b;
+}

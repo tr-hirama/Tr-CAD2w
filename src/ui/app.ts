@@ -72,7 +72,7 @@ import {
   type ToolName,
 } from './tools.js';
 import { ErrorGuard } from './error-guard.js';
-import { summarize as summarizeKen } from '../survey/ken.js';
+import { confirmGosa, incompleteCount, summarize as summarizeKen } from '../survey/ken.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
 import {
@@ -1519,7 +1519,7 @@ export class CadApp {
       const t = document.createElement('table');
       t.className = 'ken-table';
       const head = document.createElement('tr');
-      for (const label of ['境界', '実測', '計算']) {
+      for (const label of ['境界', '実測', '計算', '誤差']) {
         const th = document.createElement('th');
         th.textContent = label;
         head.append(th);
@@ -1534,7 +1534,12 @@ export class CadApp {
         measured.textContent = r.measured;
         const calc = document.createElement('td');
         calc.textContent = formatMm(r.calcDist);
-        tr.append(name, measured, calc);
+        // 誤差の色分け（デスクトップ版と同じ 20mm / 50mm のしきい値）
+        const g = confirmGosa(r);
+        const gosa = document.createElement('td');
+        gosa.textContent = g.text;
+        gosa.className = `gosa-${g.level}`;
+        tr.append(name, measured, calc, gosa);
         t.append(tr);
       }
       host.append(t);
@@ -1544,8 +1549,17 @@ export class CadApp {
     const sum = document.createElement('p');
     sum.className = 'ken-note';
     sum.textContent =
-      s.perimeter === null ? s.reason : `周長 ${formatMm(s.perimeter)}mm（${s.count} 辺・不可 ${s.unableCount}）`;
+      s.perimeter === null ? s.reason : `周長 ${formatMm(s.perimeter)}m（${s.count} 辺・不可 ${s.unableCount}）`;
     host.append(sum);
+
+    // 入れ直しが要る辺があれば件数を出す（黙って通すと未入力のまま先へ進んでしまう）
+    const todo = incompleteCount(table.rows);
+    if (todo > 0) {
+      const warn = document.createElement('p');
+      warn.className = 'ken-note warn';
+      warn.textContent = `まわりけんの入れ直しが要る辺: ${todo} 件（誤差 50mm 超・未入力・非数値）`;
+      host.append(warn);
+    }
   }
 
   private buildLayerList(): void {
@@ -1769,7 +1783,7 @@ export function formatDenominator(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
 }
 
-/** まわりけんの長さ表示（mm）。整数はそのまま、端数は 3 桁まで。 */
+/** まわりけんの長さ表示（m）。整数はそのまま、端数は 3 桁まで。 */
 function formatMm(v: number): string {
   if (!Number.isFinite(v)) return '—';
   return Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');

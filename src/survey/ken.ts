@@ -1,10 +1,17 @@
 /**
- * まわりけん（境界辺長）。**この版は表示だけ**（issue #28。入力・照合は行わない）。
+ * まわりけん（境界辺長）。**この版は入力欄を作らず、読んだ値を見せるだけ**（issue #28）。
+ * ただし**誤差の色分けは出す**（利用者の指示）。
  *
  * デスクトップ版 TrCad2D の `SurveyKenDto(Name, Measured, CalcDist, Unable)` と
  * `Keisanten`（計算点あり）に対応する。`.tc2` から読んだ値をそのまま持ち、
- * そのまま書き戻す。**Web 側で値を作らない**ので、実測値と計算値の突き合わせ
- * （誤差の色分け）はここには無い。
+ * そのまま書き戻す。**Web 側で値を作らない。**
+ *
+ * ## 単位は m
+ *
+ * `.tc2` の `Measured` も `CalcDist` も **m**。デスクトップ版
+ * （`MainWindow.xaml.cs` の `.tc2` 読込）は `CalcDist` を変換せずそのまま
+ * `MawarikenRow` へ渡し、`ConfirmGosa` が `|Measured − CalcDist| × 1000` を
+ * mm として判定している。**誤差のしきい値だけが mm。**
  *
  * 周長だけは表示のために出す。**境界名が `K1` からの連番で抜けなく揃っている
  * ときだけ**で、欠番があれば出さない（辺が欠けたまま足すと実際と違う値になる）。
@@ -16,7 +23,7 @@ export interface KenRow {
   name: string;
   /** 実測値（まわりけん）。**文字列のまま持つ**（デスクトップ版が文字列で持つため）。 */
   measured: string;
-  /** 図面から計算した辺長（mm）。 */
+  /** 図面から計算した辺長（**m**）。 */
   calcDist: number;
   /** 測れない辺。集計から外す。 */
   unable: boolean;
@@ -107,7 +114,7 @@ export function checkSequence(rows: readonly KenRow[]): SequenceCheck {
 }
 
 export interface KenSummary {
-  /** 周長（mm）。出せないときは `null`。 */
+  /** 周長（**m**）。出せないときは `null`。 */
   perimeter: number | null;
   /** 出せない理由（出せるときは空文字）。 */
   reason: string;
@@ -123,6 +130,73 @@ export interface KenSummary {
  * 「不可」の辺も**周長には含める**（測れないだけで辺そのものは在る）。
  * 面積はこの版では出さない。境界点の座標が要るが、それは #8（座標入力）の範囲。
  */
+/** 誤差の判定（デスクトップ版 `GosaLevel`）。 */
+export type GosaLevel = 'ok' | 'warn' | 'ng' | 'none';
+
+/** 誤差の判定 1 件ぶん。 */
+export interface KenGosa {
+  /** 表示文字。数値（m・小数 3 桁）／`Over`／`－`／`No point`／`不可`／空。 */
+  text: string;
+  level: GosaLevel;
+  /** 誤差（mm）。判定できないときは `null`。 */
+  mm: number | null;
+}
+
+/** 水色の上限（mm）。デスクトップ版 `MawarikenRow.OkMm`。 */
+export const OK_MM = 20;
+/** 金の上限（mm）。これを超えると赤（`Over`）。デスクトップ版 `MawarikenRow.WarnMm`。 */
+export const WARN_MM = 50;
+
+/**
+ * しきい値を比べるときの許容。
+ *
+ * `10.050 - 10` は `0.05000000000000071` になるので、素直に比べると
+ * **ちょうど 50mm が Over（赤）に落ちる**。1e-9 mm の差は測量では意味を持たない。
+ * デスクトップ版（C#）も同じ浮動小数の癖を持つが、そちらの偶然の挙動ではなく
+ * **境界値は等号側に入れる**方を採る。
+ */
+const EPS_MM = 1e-9;
+
+/**
+ * まわりけんと計算値の誤差を判定する（デスクトップ版 `MawarikenRow.ConfirmGosa` の移植）。
+ *
+ * **誤差(mm) = |まわりけん − 計算値| × 1000**（どちらも m のため）。
+ * 判定の順番も向こうに合わせる。順番を変えると「不可なのに数値が出る」等が起きる。
+ *
+ * | 条件 | 表示 | 判定 |
+ * |---|---|---|
+ * | 不可（測れない辺） | `不可` | 赤 |
+ * | 未入力 | 空 | なし |
+ * | 非数値 | `－` | 赤 |
+ * | 計算値が 0 以下 | `No point` | 赤 |
+ * | 誤差 ≦ 20mm | 誤差(m) | 水色 |
+ * | 誤差 ≦ 50mm | 誤差(m) | 金 |
+ * | 誤差 > 50mm | `Over` | 赤 |
+ */
+export function confirmGosa(row: KenRow): KenGosa {
+  if (row.unable) return { text: '不可', level: 'ng', mm: null };
+  const t = row.measured.trim();
+  if (t === '') return { text: '', level: 'none', mm: null };
+  const m = Number(t);
+  if (!Number.isFinite(m)) return { text: '－', level: 'ng', mm: null };
+  if (!(row.calcDist > 0)) return { text: 'No point', level: 'ng', mm: null };
+
+  const mm = Math.abs(m - row.calcDist) * 1000;
+  if (mm <= OK_MM + EPS_MM) return { text: (mm / 1000).toFixed(3), level: 'ok', mm };
+  if (mm <= WARN_MM + EPS_MM) return { text: (mm / 1000).toFixed(3), level: 'warn', mm };
+  return { text: 'Over', level: 'ng', mm };
+}
+
+/**
+ * まだ入れ直しが要る辺の数。
+ *
+ * デスクトップ版は **Ok・Warn 以外を未完了**として数え、1 つでもあれば先へ進ませない
+ * （VB `GetMawarikenHantei`）。**「不可」の辺は測れないので対象外。**
+ */
+export function incompleteCount(rows: readonly KenRow[]): number {
+  return rows.filter((r) => !r.unable && !['ok', 'warn'].includes(confirmGosa(r).level)).length;
+}
+
 export function summarize(table: KenTable): KenSummary {
   const rows = table.rows;
   const unableCount = rows.filter((r) => r.unable).length;

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   checkSequence,
+  confirmGosa,
+  incompleteCount,
   cloneKenTable,
   emptyKenTable,
   isKenTableEmpty,
@@ -247,5 +249,82 @@ describe('.tc2 との往復（issue #28）', () => {
     doc.ken = { rows: [{ name: 'K1', measured: '8', calcDist: 8, unable: false }], keisanten: true };
     doc.clear();
     expect(doc.ken).toEqual(emptyKenTable());
+  });
+});
+
+describe('誤差の判定（confirmGosa・デスクトップ版 MawarikenRow の移植）', () => {
+  /** `.tc2` の Measured / CalcDist はどちらも m。誤差だけ mm で判定する。 */
+  function g(measured: string, calcDist: number, unable = false): ReturnType<typeof confirmGosa> {
+    return confirmGosa({ name: 'K1', measured, calcDist, unable });
+  }
+
+  it('誤差 10mm は水色（数値を m で出す）', () => {
+    const r = g('10.010', 10);
+    expect(r.level).toBe('ok');
+    expect(r.text).toBe('0.010');
+    expect(r.mm).toBeCloseTo(10, 9);
+  });
+
+  it('しきい値ちょうど 20mm は水色', () => {
+    expect(g('10.020', 10).level).toBe('ok');
+  });
+
+  it('誤差 35mm は金', () => {
+    const r = g('10.035', 10);
+    expect(r.level).toBe('warn');
+    expect(r.text).toBe('0.035');
+  });
+
+  it('しきい値ちょうど 50mm は金', () => {
+    expect(g('10.050', 10).level).toBe('warn');
+  });
+
+  it('誤差 60mm は Over（赤）', () => {
+    const r = g('10.060', 10);
+    expect(r.level).toBe('ng');
+    expect(r.text).toBe('Over');
+  });
+
+  it('非数値は － （赤）', () => {
+    expect(g('abc', 10)).toMatchObject({ text: '－', level: 'ng' });
+  });
+
+  it('未入力は空（判定なし）', () => {
+    expect(g('', 10)).toMatchObject({ text: '', level: 'none' });
+    expect(g('   ', 10)).toMatchObject({ text: '', level: 'none' });
+  });
+
+  it('計算値が無ければ No point（赤）', () => {
+    expect(g('10.5', 0)).toMatchObject({ text: 'No point', level: 'ng' });
+    expect(g('10.5', -1)).toMatchObject({ text: 'No point', level: 'ng' });
+  });
+
+  /** 判定の順番を守る。不可は他のどれより先に見る。 */
+  it('不可は入力があっても 不可（赤）', () => {
+    expect(g('10.010', 10, true)).toMatchObject({ text: '不可', level: 'ng' });
+  });
+
+  it('マイナス方向の誤差も絶対値で見る', () => {
+    expect(g('9.990', 10).level).toBe('ok');
+    expect(g('9.940', 10).level).toBe('ng');
+  });
+});
+
+describe('incompleteCount', () => {
+  function row2(measured: string, calcDist: number, unable = false): KenRow {
+    return { name: 'K1', measured, calcDist, unable };
+  }
+
+  it('Ok と Warn は完了とみなす', () => {
+    expect(incompleteCount([row2('10.010', 10), row2('10.035', 10)])).toBe(0);
+  });
+
+  it('Over・非数値・未入力は入れ直しが要る', () => {
+    expect(incompleteCount([row2('10.060', 10), row2('abc', 10), row2('', 10)])).toBe(3);
+  });
+
+  /** 測れない辺は対象外。数えると永久に 0 にならない。 */
+  it('不可の辺は数えない', () => {
+    expect(incompleteCount([row2('', 10, true), row2('abc', 10, true)])).toBe(0);
   });
 });
