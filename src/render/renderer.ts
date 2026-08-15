@@ -9,8 +9,9 @@
 import type { Aabb, Vec2 } from '../core/geometry.js';
 import type { CadView } from '../core/view.js';
 import type { CadDocument } from '../core/document.js';
-import type { Entity, TextEntity } from '../core/entity.js';
+import type { DimEntity, Entity, TextEntity } from '../core/entity.js';
 import { TEXT_LINE_GAP, angleToPoint, flatten, rectCorners } from '../core/entity.js';
+import { dimGeometry } from '../core/dim-geom.js';
 import { effectiveColor, effectiveLineStyle, isLightBackground, type ColorContext } from '../core/layer.js';
 import { dashArrayPx, lineWidthPx, printLineWidthPx } from './linetype.js';
 import type { SnapResult } from '../core/snap.js';
@@ -334,6 +335,9 @@ export class Renderer {
       case 'text':
         this.drawText(e, view, color);
         break;
+      case 'dim':
+        this.drawDim(e, view, color);
+        break;
       case 'circle': {
         const c = view.toScreen(e.center);
         const r = view.toScreenLen(e.radius);
@@ -406,26 +410,76 @@ export class Renderer {
   }
 
   private drawText(e: TextEntity, view: CadView, color: string): void {
+    this.drawTextAt(e.text, view.toScreen(e.at), view.toScreenLen(e.height), e.rotation, e.hAlign, e.vAlign, color);
+  }
+
+  /** 文字列を画面座標へ描く（`text` 図形と寸法値で共用）。 */
+  private drawTextAt(
+    text: string,
+    at: Vec2,
+    px: number,
+    rotation: number,
+    hAlign: TextEntity['hAlign'],
+    vAlign: TextEntity['vAlign'],
+    color: string,
+  ): void {
     const ctx = this.ctx;
-    const px = view.toScreenLen(e.height);
     if (px < 3) return; // 読めない大きさは描かない（LOD）
-    const at = view.toScreen(e.at);
 
     ctx.save();
     ctx.translate(at.x, at.y);
-    ctx.rotate(-e.rotation); // ワールドは反時計回り、画面は時計回り
+    ctx.rotate(-rotation); // ワールドは反時計回り、画面は時計回り
     ctx.fillStyle = color;
+    ctx.setLineDash([]); // 文字は線種の刻みを引き継がない
     ctx.font = `${px}px "Noto Sans JP", "Yu Gothic UI", sans-serif`;
-    ctx.textAlign = e.hAlign === 'center' ? 'center' : e.hAlign === 'right' ? 'right' : 'left';
+    ctx.textAlign = hAlign === 'center' ? 'center' : hAlign === 'right' ? 'right' : 'left';
     ctx.textBaseline =
-      e.vAlign === 'top' ? 'top' : e.vAlign === 'middle' ? 'middle' : e.vAlign === 'bottom' ? 'bottom' : 'alphabetic';
+      vAlign === 'top' ? 'top' : vAlign === 'middle' ? 'middle' : vAlign === 'bottom' ? 'bottom' : 'alphabetic';
 
-    const lines = e.text.split('\n');
+    const lines = text.split('\n');
     const lead = px * TEXT_LINE_GAP;
     for (let i = 0; i < lines.length; i++) {
       ctx.fillText(lines[i]!, 0, i * lead);
     }
     ctx.restore();
+  }
+
+  /**
+   * 寸法。引出線・寸法線は実線で、**矢印は塗りつぶし**、寸法値は文字として描く。
+   * 幾何は毎フレーム `dimGeometry` が作る（計測点を動かせば値も追従する）。
+   */
+  private drawDim(e: DimEntity, view: CadView, color: string): void {
+    const g = dimGeometry(e);
+    if (!g) return;
+    const ctx = this.ctx;
+
+    // 寸法の線は線種の刻みを持たない（AutoCAD も寸法線は実線で引く）
+    ctx.setLineDash([]);
+    for (const [a, b] of g.lines) {
+      this.strokePath([view.toScreen(a), view.toScreen(b)], false);
+    }
+
+    for (const tri of g.arrows) {
+      const p = tri.map((q) => view.toScreen(q));
+      ctx.beginPath();
+      ctx.moveTo(p[0]!.x, p[0]!.y);
+      for (let i = 1; i < p.length; i++) ctx.lineTo(p[i]!.x, p[i]!.y);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+
+    if (g.text !== '') {
+      this.drawTextAt(
+        g.text,
+        view.toScreen(g.textPos),
+        view.toScreenLen(g.textHeight),
+        g.textAngle,
+        'center',
+        'bottom',
+        color,
+      );
+    }
   }
 
   private drawGrid(view: CadView, opts: RenderOptions): void {

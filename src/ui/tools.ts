@@ -7,8 +7,8 @@
 
 import type { Vec2 } from '../core/geometry.js';
 import { dist } from '../core/geometry.js';
-import type { Entity, EntityColor, LineStyleName, NewEntity } from '../core/entity.js';
-import { DEFAULT_ATTRS, angleOf } from '../core/entity.js';
+import type { DimType, Entity, EntityColor, LineStyleName, NewEntity } from '../core/entity.js';
+import { DEFAULT_ATTRS, DEFAULT_DIM_STYLE, angleOf } from '../core/entity.js';
 
 export type ToolName =
   | 'select'
@@ -22,7 +22,11 @@ export type ToolName =
   | 'move'
   | 'copy'
   /** 用紙空間で「紙に開ける窓」を 2 クリックの矩形で作る。 */
-  | 'viewport';
+  | 'viewport'
+  | 'dim-linear'
+  | 'dim-radius'
+  | 'dim-diameter'
+  | 'dim-angular';
 
 export const TOOL_LABEL: Record<ToolName, string> = {
   select: '選択',
@@ -36,7 +40,27 @@ export const TOOL_LABEL: Record<ToolName, string> = {
   move: '移動',
   copy: '複写',
   viewport: 'ビューポート',
+  'dim-linear': '直線寸法',
+  'dim-radius': '半径寸法',
+  'dim-diameter': '直径寸法',
+  'dim-angular': '角度寸法',
 };
+
+/** 寸法ツールなら寸法の種類、そうでなければ `null`。 */
+export function dimTypeOf(name: ToolName): DimType | null {
+  switch (name) {
+    case 'dim-linear':
+      return 'linear';
+    case 'dim-radius':
+      return 'radius';
+    case 'dim-diameter':
+      return 'diameter';
+    case 'dim-angular':
+      return 'angular';
+    default:
+      return null;
+  }
+}
 
 /** ツールのショートカット（デスクトップ版 TrCad2D と同じ割当）。 */
 export const TOOL_KEYS: Record<string, ToolName> = {
@@ -184,10 +208,49 @@ export class DrawTool {
           },
         ];
       }
+      case 'dim-linear': {
+        // 3 点目（寸法線の位置）が来るまでは計測線に重ねてプレビューする
+        if (pts.length < 2) return null;
+        const points = pts.length >= 3 ? [pts[0]!, pts[1]!, pts[2]!] : [pts[0]!, pts[1]!, pts[1]!];
+        return [{ ...b, ...DEFAULT_DIM_STYLE, kind: 'dim', dimType: 'linear', points }];
+      }
+      case 'dim-angular': {
+        if (pts.length < 3) return null;
+        return [
+          { ...b, ...DEFAULT_DIM_STYLE, kind: 'dim', dimType: 'angular', points: [pts[0]!, pts[1]!, pts[2]!] },
+        ];
+      }
       default:
+        // 半径・直径は「円／弧をクリックして図形から採る」ので CadApp 側で作る
         return null;
     }
   }
+}
+
+/** 半径・直径の寸法を、円／弧の中心・半径とクリック位置から作る。 */
+export function buildRadialDim(
+  dimType: 'radius' | 'diameter',
+  center: Vec2,
+  radius: number,
+  towards: Vec2,
+  attrs: DrawAttrs,
+): NewEntity | null {
+  if (!(radius > 0)) return null;
+  const d = { x: towards.x - center.x, y: towards.y - center.y };
+  const l = Math.hypot(d.x, d.y);
+  // 中心そのものを押したときは右向きに引き出す
+  const dir = l < 1e-9 ? { x: 1, y: 0 } : { x: d.x / l, y: d.y / l };
+  const edge = { x: center.x + dir.x * radius, y: center.y + dir.y * radius };
+  return {
+    layer: attrs.layer,
+    color: attrs.color,
+    lineStyle: attrs.lineStyle,
+    lineWidth: attrs.lineWidth,
+    ...DEFAULT_DIM_STYLE,
+    kind: 'dim',
+    dimType,
+    points: [center, edge],
+  };
 }
 
 /** ツールが図形を確定するのに必要なクリック数。`null` は不定（連続線）。 */
@@ -204,11 +267,17 @@ export function requiredPoints(name: ToolName): number | null {
     case 'viewport':
       return 2;
     case 'arc':
+    case 'dim-linear':
+    case 'dim-angular':
       return 3;
     case 'polyline':
       return null;
     case 'select':
       return null;
+    // 円／弧をクリックして即作図する（クリック数ではなく図形を採る）
+    case 'dim-radius':
+    case 'dim-diameter':
+      return 1;
   }
 }
 
@@ -237,5 +306,17 @@ export function promptFor(name: ToolName, collected: number): string {
       return collected === 0 ? '基点をクリック' : '複写先をクリック';
     case 'viewport':
       return collected === 0 ? '窓の1つ目の角をクリック（用紙空間）' : '窓の対角をクリック';
+    case 'dim-linear':
+      return collected === 0
+        ? '計測する1点目をクリック'
+        : collected === 1
+          ? '計測する2点目をクリック'
+          : '寸法線の位置をクリック';
+    case 'dim-radius':
+      return '円または円弧をクリック（押した向きへ引き出します）';
+    case 'dim-diameter':
+      return '円または円弧をクリック（押した向きが直径の向きになります）';
+    case 'dim-angular':
+      return collected === 0 ? '角の頂点をクリック' : collected === 1 ? '1辺目をクリック' : '2辺目をクリック';
   }
 }

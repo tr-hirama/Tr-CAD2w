@@ -18,6 +18,7 @@
 ## いまできること
 
 - **作図**: 線 / 矩形 / 円 / 円弧 / 連続線 / 点 / 文字（複数行・揃え指定あり）
+- **寸法**: 直線（2点→寸法線位置）／半径 `R`・直径 `Ø`（**円・弧をクリックすると中心と半径を図形から採る**）／角度 `°`。文字高・矢印・小数桁・計測倍率・単位接尾を寸法ごとに保持。**寸法値はダブルクリック／`F2` で手書きに差し替えられる**（空欄＝自動、`<>` は計測値に置換。例 `約<>cm`）
 - **選択**: クリック / Shift+クリックで追加・解除 / 左ドラッグで矩形選択（**右→左は交差選択**）
 - **編集**: 移動・複写（基点→先の2クリック・点線プレビュー）・削除・Undo / Redo・重ね順（最前面 / 最背面）
 - **画層**: 標準画層（境界・道路・家屋・電柱ほか）の色と線種、表示 / 非表示、作図先の切替
@@ -38,7 +39,7 @@
 
 | 向き | 落ちるもの |
 |---|---|
-| **`.tc2` → Web** | ハッチ・ブロック（`Insert`）・画像・寸法（**開いたときに件数を表示**）、測量データ（観測 / 座標 / まわりけん / レベル / 座標変換）、概要・コメント・メモ、用紙空間、グループ |
+| **`.tc2` → Web** | ハッチ・ブロック（`Insert`）・画像（**開いたときに件数を表示**）、測量データ（観測 / 座標 / まわりけん / レベル / 座標変換）、概要・コメント・メモ、用紙空間、グループ |
 | **Web → `.tc2`** | 画層の**線種**（デスクトップ版の画層は色と表示だけ）、用紙空間 |
 
 デスクトップ版の連続線に**閉合フラグが無い**ため、閉じた連続線は「最後に始点を足す」形で書き出し、読むときは「最初と最後が同じ点なら閉じている」とみなします（往復は一致します）。
@@ -48,6 +49,8 @@
 | キー / 操作 | 機能 |
 |---|---|
 | `S` `L` `R` `C` `A` `P` `D` `T` | 選択 / 線 / 矩形 / 円 / 円弧 / 連続線 / 点 / 文字 |
+| ツールバーの **寸法** / **半径** / **直径** / **角度** | 直線寸法 / 半径寸法 / 直径寸法 / 角度寸法 |
+| `F2` / 寸法をダブルクリック | 寸法値を手で書き換える（空欄＝自動計測値） |
 | ツールバーの **DXF書出** / **.tc2書出** | DXF（UTF-8 / R2007）/ デスクトップ版の .tc2 で書き出す |
 | `M` | 移動（基点→先の2クリック） |
 | ホイール | ズーム（カーソル位置固定） |
@@ -90,6 +93,7 @@ npm run build
 | `src/core/view.ts` | ワールド⇔スクリーン変換、カーソル固定ズーム、全体表示 |
 | `src/core/entity.ts` | 図形要素（判別可能ユニオン）と範囲・ヒットテスト・変形・スナップ点・折れ線展開 |
 | `src/core/layer.ts` | **画層の色と線種の唯一の定義**。実効色（背景反転・暗背景の持ち上げ） |
+| `src/core/dim-geom.ts` | 寸法の幾何（引出線・矢印・寸法値）。**計測点だけを保存し、見た目は毎回作る** |
 | `src/core/document.ts` | 図面（図形集合・選択・Undo・保存 / 読込） |
 | `src/core/spatial-index.ts` | 均一グリッドの空間インデックス |
 | `src/core/snap.ts` | オブジェクトスナップ・グリッド吸着・交点計算 |
@@ -116,7 +120,7 @@ npm run build
 | [M1 DXF入出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/1) | ~~[#1 読込](https://github.com/tr-hirama/Tr-CAD2w/issues/1)~~ / ~~[#2 書出（UTF-8）](https://github.com/tr-hirama/Tr-CAD2w/issues/2)~~ / [#3 往復の検証](https://github.com/tr-hirama/Tr-CAD2w/issues/3) / [#4 Shift-JIS 出力の判断](https://github.com/tr-hirama/Tr-CAD2w/issues/4) |
 | [M2 編集操作](https://github.com/tr-hirama/Tr-CAD2w/milestone/2) | [#5 トリム・延長・オフセット](https://github.com/tr-hirama/Tr-CAD2w/issues/5) / [#6 フィレット・面取り](https://github.com/tr-hirama/Tr-CAD2w/issues/6) / [#7 回転・拡縮・グループ・クリップボード](https://github.com/tr-hirama/Tr-CAD2w/issues/7) |
 | [M3 測量](https://github.com/tr-hirama/Tr-CAD2w/milestone/3) | [#8 座標入力・CSV](https://github.com/tr-hirama/Tr-CAD2w/issues/8) / [#9 観測ファイル取込](https://github.com/tr-hirama/Tr-CAD2w/issues/9) / [#10 自動結線](https://github.com/tr-hirama/Tr-CAD2w/issues/10) / [#11 トラバース・三斜求積](https://github.com/tr-hirama/Tr-CAD2w/issues/11) |
-| [M4 図面表現と出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/4) | [#12 寸法線](https://github.com/tr-hirama/Tr-CAD2w/issues/12) / [#13 ハッチ・ブロック・画像](https://github.com/tr-hirama/Tr-CAD2w/issues/13) / ~~[#14 印刷・PDF・用紙空間](https://github.com/tr-hirama/Tr-CAD2w/issues/14)~~ / ~~[#15 `.tc2` 相互運用](https://github.com/tr-hirama/Tr-CAD2w/issues/15)~~ / [#16 WebGL 描画](https://github.com/tr-hirama/Tr-CAD2w/issues/16) / ~~[#22 用紙空間 UI](https://github.com/tr-hirama/Tr-CAD2w/issues/22)~~ |
+| [M4 図面表現と出力](https://github.com/tr-hirama/Tr-CAD2w/milestone/4) | ~~[#12 寸法線](https://github.com/tr-hirama/Tr-CAD2w/issues/12)~~ / [#13 ハッチ・ブロック・画像](https://github.com/tr-hirama/Tr-CAD2w/issues/13) / ~~[#14 印刷・PDF・用紙空間](https://github.com/tr-hirama/Tr-CAD2w/issues/14)~~ / ~~[#15 `.tc2` 相互運用](https://github.com/tr-hirama/Tr-CAD2w/issues/15)~~ / ~~[#16 WebGL 描画](https://github.com/tr-hirama/Tr-CAD2w/issues/16)~~ / ~~[#22 用紙空間 UI](https://github.com/tr-hirama/Tr-CAD2w/issues/22)~~ |
 
 改修は **issue1本＝ブランチ1本＝コミット1本＝PR1本**で進めます。手順は [.claude/skills/trcad2w-cycle/SKILL.md](.claude/skills/trcad2w-cycle/SKILL.md)。
 
