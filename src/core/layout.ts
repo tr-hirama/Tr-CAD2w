@@ -15,6 +15,7 @@
  */
 
 import type { Entity } from './entity.js';
+import { rotateEntity, scaleEntity, translateEntity } from './entity.js';
 import type { Vec2 } from './geometry.js';
 import { rotate, vec } from './geometry.js';
 import type { Orientation } from '../print/paper.js';
@@ -101,6 +102,26 @@ export function viewportModelExtent(vp: Viewport): { minX: number; minY: number;
     maxX: Math.max(...corners.map((c) => c.x)),
     maxY: Math.max(...corners.map((c) => c.y)),
   };
+}
+
+/**
+ * モデル空間の図形 1 つを、その窓に映る**紙座標の図形**へ変換する。
+ *
+ * 点だけを動かすと円の半径・文字高が取り残されるので、
+ * **拡縮 → 回転 → 平行移動**の順に既存の変換を合成する（`modelToPaper` と同じ結果）。
+ */
+export function modelEntityToPaper(vp: Viewport, e: Entity): Entity {
+  const s = viewportScale(vp);
+  const rectCenter = vec(vp.paperRect.x + vp.paperRect.width / 2, vp.paperRect.y + vp.paperRect.height / 2);
+  const scaled = scaleEntity(e, vp.center, s);
+  const rotated = vp.rotation === 0 ? scaled : rotateEntity(scaled, vp.center, vp.rotation);
+  return translateEntity(rotated, vec(rectCenter.x - vp.center.x, rectCenter.y - vp.center.y));
+}
+
+/** 窓の 4 隅（紙座標）。切り取りに使う。 */
+export function viewportCorners(vp: Viewport): Vec2[] {
+  const r = vp.paperRect;
+  return [vec(r.x, r.y), vec(r.x + r.width, r.y), vec(r.x + r.width, r.y + r.height), vec(r.x, r.y + r.height)];
 }
 
 /** 窓いっぱいにその範囲が収まる縮尺の分母（1:N の N）を求める。 */

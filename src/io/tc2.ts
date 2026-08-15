@@ -15,16 +15,18 @@
  * | `Kind: "Polyline"` + `Pts[2n]` | `polyline` | **閉合フラグが無い**（下記） |
  * | `Kind: "Text"` + `Pts[2]` + `Text/Height/Rotation`（**度**）`/Align/VAlign` | `text` | |
  * | `Kind: "Point"` + `Pts[2]` | `point` | |
+ * | `Kind: "Dimension"` + `Pts[2n]` + `DimType/Height/DimArrow/DimDecimals/DimScale/DimSuffix/DimText` | `dim` | `DimType` 省略＝`Linear` |
  * | `Color`（`0xAARRGGBB`） | `color`（`#rrggbb`） | **画層色と同じなら ByLayer(null)** にする |
  * | `LineType`（`Continuous`…） | `lineStyle`（`solid`…） | 1 対 1 |
  * | `LineWeight`（mm） | `lineWidth`（mm） | そのまま |
  * | `LtScale` | `lineTypeScale` | 無ければ 500 |
+ * | `PointMode` / `PointSize` | `pointStyle`（`PDMODE` / `PDSIZE` 相当） | 無ければ `＋`・画面固定 |
  *
  * ## 落ちる情報
  *
  * | 向き | 落ちるもの |
  * |---|---|
- * | tc2 → Web | ハッチ・ブロック(Insert)・画像・寸法（**件数を報告**）、測量データ（観測/座標/まわりけん/レベル/座標変換）、概要・コメント・メモ、用紙空間、グループ、ブロック定義 |
+ * | tc2 → Web | ハッチ・ブロック(Insert)・画像（**件数を報告**）、測量データ（観測/座標/まわりけん/レベル/座標変換）、概要・コメント・メモ、用紙空間、グループ、ブロック定義 |
  * | Web → tc2 | 画層の**線種**（デスクトップ版の `LayerDto` は色と表示のみ）、用紙空間 |
  *
  * ## 閉じた連続線
@@ -36,7 +38,14 @@
 
 import type { DocumentJson } from '../core/document.js';
 import { DEFAULT_LINETYPE_SCALE, FILE_FORMAT_VERSION } from '../core/document.js';
-import type { Entity, HatchPattern, LineStyleName, NewEntity, TextEntity } from '../core/entity.js';
+import type {
+  DimType,
+  Entity,
+  HatchPattern,
+  LineStyleName,
+  NewEntity,
+  TextEntity,
+} from '../core/entity.js';
 import { DEFAULT_HATCH_SPACING } from '../core/hatch.js';
 import type { BlockDef } from '../core/block.js';
 import { dist, rad, vec, type Vec2 } from '../core/geometry.js';
@@ -44,6 +53,7 @@ import { deg } from '../core/geometry.js';
 import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '../core/layer.js';
 import { looksLikeZip, unzip, zip } from './zip.js';
+import { DEFAULT_POINT_STYLE, normalizeMode } from '../core/point-style.js';
 
 /** `.tc2` の中の JSON エントリ名（デスクトップ版 `CadDocument.Tc2Entry`）。 */
 export const TC2_ENTRY = 'TrCad2D.json';
@@ -77,6 +87,12 @@ export interface Tc2EntityDto {
   ScaleY?: number;
   Img?: string | null;
   ImgOpacity?: number;
+  DimType?: string | null;
+  DimArrow?: number;
+  DimDecimals?: number;
+  DimScale?: number;
+  DimSuffix?: string | null;
+  DimText?: string | null;
 }
 
 /** デスクトップ版 `BlockDto`（名前と中身）。 */
@@ -91,6 +107,10 @@ export interface Tc2DocDto {
   Entities: Tc2EntityDto[];
   LtScale?: number | null;
   Blocks?: Tc2BlockDto[] | null;
+  /** 点の表示モード（`PDMODE` 相当）。 */
+  PointMode?: number | null;
+  /** 点の表示サイズ（`PDSIZE` 相当。0 は画面固定）。 */
+  PointSize?: number | null;
   [key: string]: unknown; // 測量データなど、Web 版が使わない項目はそのまま無視する
 }
 
@@ -138,6 +158,21 @@ const HATCH_TO_TC2: Record<HatchPattern, string> = {
   line135: 'Line135',
   cross: 'Cross',
   grid: 'Grid',
+};
+
+/** デスクトップ版 `DimType`（省略＝`Linear`）⇔ Web 版 `dimType`。 */
+const DIM_TYPE_TO_WEB: Readonly<Record<string, DimType>> = {
+  Linear: 'linear',
+  Radius: 'radius',
+  Diameter: 'diameter',
+  Angular: 'angular',
+};
+
+const DIM_TYPE_TO_TC2: Record<DimType, string> = {
+  linear: 'Linear',
+  radius: 'Radius',
+  diameter: 'Diameter',
+  angular: 'Angular',
 };
 
 const H_TO_ALIGN: Record<TextEntity['hAlign'], string> = { left: 'Left', center: 'Center', right: 'Right' };
@@ -257,6 +292,13 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
     lineTypeScale: ltScale,
     layers,
     entities,
+    pointStyle: {
+      mode: normalizeMode(typeof dto.PointMode === 'number' ? dto.PointMode : DEFAULT_POINT_STYLE.mode),
+      size:
+        typeof dto.PointSize === 'number' && Number.isFinite(dto.PointSize) && dto.PointSize >= 0
+          ? dto.PointSize
+          : DEFAULT_POINT_STYLE.size,
+    },
   };
   if (blocks.length > 0) json.blocks = blocks;
   return { json, skipped, droppedSections };
@@ -356,8 +398,26 @@ function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntit
         opacity: numberOr(d.ImgOpacity, 1),
       };
     }
+    case 'Dimension': {
+      const dimType = DIM_TYPE_TO_WEB[d.DimType ?? 'Linear'] ?? 'linear';
+      // 直線・角度は 3 点、半径・直径は 2 点そろっていないと幾何が作れない
+      const need = dimType === 'radius' || dimType === 'diameter' ? 2 : 3;
+      if (points.length < need) return null;
+      return {
+        ...base,
+        kind: 'dim',
+        dimType,
+        points,
+        height: numberOr(d.Height, 0),
+        arrow: numberOr(d.DimArrow, 0),
+        decimals: Math.round(numberOr(d.DimDecimals, 2)),
+        measureScale: numberOr(d.DimScale, 1),
+        suffix: d.DimSuffix ?? '',
+        text: d.DimText ?? '',
+      };
+    }
     default:
-      return null; // Dimension など、まだ対応していない種別
+      return null; // まだ対応していない種別
   }
 }
 
@@ -385,6 +445,8 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     CurrentLayer: '0',
     Entities: entities,
     LtScale: json.lineTypeScale,
+    PointMode: json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode,
+    PointSize: json.pointStyle?.size ?? DEFAULT_POINT_STYLE.size,
   };
 
   const blocks = json.blocks ?? [];
@@ -470,6 +532,19 @@ function toTc2Entity(e: Entity, layerColor: Map<string, number>): Tc2EntityDto |
         // デスクトップ版は「素の base64」で持つ（data URL ではない）
         Img: base64OfDataUrl(e.dataUrl),
         ImgOpacity: e.opacity,
+      };
+    case 'dim':
+      return {
+        ...base,
+        Kind: 'Dimension',
+        Pts: e.points.flatMap((p) => [p.x, p.y]),
+        Height: e.height,
+        DimType: DIM_TYPE_TO_TC2[e.dimType],
+        DimArrow: e.arrow,
+        DimDecimals: e.decimals,
+        DimScale: e.measureScale,
+        DimSuffix: e.suffix,
+        DimText: e.text,
       };
   }
 }

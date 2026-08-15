@@ -13,6 +13,7 @@
  */
 
 import type { CadDocument } from '../core/document.js';
+import type { LayoutSpace } from '../core/layout.js';
 import { CadView } from '../core/view.js';
 import { Renderer, DEFAULT_RENDER } from '../render/renderer.js';
 import {
@@ -112,6 +113,57 @@ function maskMargins(canvas: HTMLCanvasElement, settings: PrintSettings, dpi: nu
   ctx.restore();
 }
 
+/**
+ * レイアウト（用紙空間）を 1 ページとして描く。
+ *
+ * モデル空間の印刷と違い**割付も尺度も要らない**。紙に描いてあるものが
+ * そのまま 1 枚になる（紙 mm = 用紙 mm）ので、余白マスクも掛けない
+ * （図枠は余白いっぱいまで引くのが普通）。
+ */
+export function renderLayoutPage(
+  doc: CadDocument,
+  layout: LayoutSpace,
+  settings: PrintSettings,
+): HTMLCanvasElement | null {
+  // レイアウト自身の用紙・向きで刷る（印刷設定の用紙ではない）
+  const paperSettings: PrintSettings = { ...settings, paper: layout.paper, orientation: layout.orientation };
+  const canvas = document.createElement('canvas');
+  const px = paperPixels(paperSettings);
+  canvas.width = px.width;
+  canvas.height = px.height;
+  if (canvas.width !== px.width || canvas.height !== px.height) return null;
+
+  let renderer: Renderer;
+  try {
+    renderer = new Renderer(canvas);
+  } catch {
+    return null;
+  }
+  renderer.resize(px.width, px.height, 1);
+
+  const dpi = effectiveDpi(paperSettings);
+  const size = paperExtent(paperSettings);
+  const view = new CadView();
+  view.resize(px.width, px.height);
+  view.center = { x: size.width / 2, y: size.height / 2 };
+  // 紙 1mm を印刷解像度の px へ（1:1）
+  view.setScale(mmToPx(1, dpi));
+
+  renderer.drawLayout(doc, layout, view, {
+    ...DEFAULT_RENDER,
+    background: '#ffffff',
+    showGrid: false,
+    showAxis: false,
+    monochrome: settings.color === 'mono',
+    lineWidthPxPerMm: dpi / 25.4,
+    // 紙の輪郭・印刷可能領域の目安は画面だけのもの。紙には刷らない
+    margin: 0,
+    paperOutline: false,
+    viewportFrames: false,
+  });
+  return canvas;
+}
+
 /** canvas を解放する（大きな canvas は参照を捨てるだけでは戻りが遅い）。 */
 export function releaseCanvas(canvas: HTMLCanvasElement | null | undefined): void {
   if (!canvas) return;
@@ -137,6 +189,32 @@ export function createPageRenderer(doc: CadDocument, settings: PrintSettings, bo
       const page = layout.pages[index];
       if (!page) return null;
       return renderPage(doc, page, settings, layout.paperPerWorld);
+    },
+  };
+}
+
+/**
+ * 用紙空間（レイアウト）を刷るための 1 ページぶんの割付。
+ *
+ * **紙に描いてあるものがそのまま 1 枚**になるので、割付は常に 1 ページ・
+ * 尺度は 1:1（紙 mm = 用紙 mm）。
+ */
+export function createLayoutPageRenderer(
+  doc: CadDocument,
+  space: LayoutSpace,
+  settings: PrintSettings,
+): PageRenderer {
+  const paperSettings: PrintSettings = { ...settings, paper: space.paper, orientation: space.orientation };
+  const size = paperExtent(paperSettings);
+  return {
+    layout: {
+      cols: 1,
+      rows: 1,
+      paperPerWorld: 1,
+      pages: [{ index: 0, col: 0, row: 0, worldBox: { minX: 0, minY: 0, maxX: size.width, maxY: size.height } }],
+    },
+    renderAt(index: number): HTMLCanvasElement | null {
+      return index === 0 ? renderLayoutPage(doc, space, settings) : null;
     },
   };
 }

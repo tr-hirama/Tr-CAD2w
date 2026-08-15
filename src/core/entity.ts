@@ -8,6 +8,8 @@
 
 import type { Aabb, Vec2 } from './geometry.js';
 import { aabbFromCorners, aabbOf, add, dist, distToSegment, rotate, sub, vec } from './geometry.js';
+// 寸法は幾何を持たず毎回作る。dim-geom.ts 側は型しか使わないので循環参照にならない
+import { dimGeometry } from './dim-geom.js';
 
 /** 色。`null` は ByLayer（画層色に従う）。 */
 export type EntityColor = string | null;
@@ -124,6 +126,32 @@ export interface ImageEntity extends EntityBase {
   opacity: number;
 }
 
+/** 寸法の種類。`points` の意味が種類ごとに変わる（`dim-geom.ts` の表を見る）。 */
+export type DimType = 'linear' | 'radius' | 'diameter' | 'angular';
+
+/**
+ * 寸法。**幾何（引出線・矢印・文字）は持たず `dim-geom.ts` が毎回作る。**
+ * 計測点だけを持つので、点を動かせば値も表示も追従する。
+ */
+export interface DimEntity extends EntityBase {
+  kind: 'dim';
+  dimType: DimType;
+  /** 計測点。種類ごとに意味が変わる。 */
+  points: Vec2[];
+  /** 文字高（mm）。**0 は種類ごとの自動値**（デスクトップ版と同じ約束）。 */
+  height: number;
+  /** 矢印の長さ（mm）。0 は文字高から自動。 */
+  arrow: number;
+  /** 寸法値の小数桁。 */
+  decimals: number;
+  /** 計測値に掛ける倍率（実寸→表記）。 */
+  measureScale: number;
+  /** 寸法値の接尾（単位など）。 */
+  suffix: string;
+  /** 寸法値の手動上書き。空＝自動。`<>` は計測値に置換される。 */
+  text: string;
+}
+
 export type Entity =
   | LineEntity
   | RectEntity
@@ -134,7 +162,8 @@ export type Entity =
   | TextEntity
   | HatchEntity
   | InsertEntity
-  | ImageEntity;
+  | ImageEntity
+  | DimEntity;
 
 export type EntityKind = Entity['kind'];
 
@@ -161,6 +190,17 @@ export const DEFAULT_HATCH_STYLE = {
   /** mm。図面の縮尺に合わせて調整する。 */
   spacing: 200,
 };
+/** 寸法スタイルの既定値（デスクトップ版 `Entity` の初期値に合わせる）。 */
+export const DEFAULT_DIM_STYLE = {
+  /** 0 = 計測長から自動。 */
+  height: 0,
+  /** 0 = 文字高から自動。 */
+  arrow: 0,
+  decimals: 2,
+  measureScale: 1,
+  suffix: '',
+  text: '',
+} as const;
 
 /** 図形の複製。参照を共有しない（Undo のスナップショットとコピペで使う）。 */
 export function cloneEntity(e: Entity): Entity {
@@ -169,6 +209,8 @@ export function cloneEntity(e: Entity): Entity {
       return { ...e, points: e.points.map((p) => vec(p.x, p.y)) };
     case 'hatch':
       // 配列を共有すると Undo で戻らず、コピーの境界を動かすと元も動く
+    case 'dim':
+      // 配列を共有すると Undo で戻らず、コピーの点を動かすと元も動く
       return { ...e, points: e.points.map((p) => vec(p.x, p.y)) };
     default:
       // Vec2 は読み取り専用なので浅いコピーで足りる
@@ -209,7 +251,36 @@ export function entityBounds(e: Entity): Aabb {
       // 中身はブロック定義にあり、ここからは見えない。挿入点だけを返す
       // （実際の広がりは `CadDocument` が展開して求める）
       return aabbFromCorners(e.at, e.at);
+    case 'dim':
+      return aabbOf(dimOutlinePoints(e));
   }
+}
+
+/**
+ * 寸法の外形を作る点（引出線・矢印・文字の隅）。
+ * 幾何が作れないとき（点が足りない・退化）は計測点だけを返す。
+ */
+export function dimOutlinePoints(e: DimEntity): Vec2[] {
+  const g = dimGeometry(e);
+  if (!g) return [...e.points];
+  const pts: Vec2[] = [...e.points];
+  for (const [a, b] of g.lines) pts.push(a, b);
+  for (const tri of g.arrows) pts.push(...tri);
+  if (g.text !== '') {
+    pts.push(
+      ...textCorners({
+        ...e,
+        kind: 'text',
+        at: g.textPos,
+        text: g.text,
+        height: g.textHeight,
+        rotation: g.textAngle,
+        hAlign: 'center',
+        vAlign: 'bottom',
+      }),
+    );
+  }
+  return pts;
 }
 
 /**
@@ -298,6 +369,24 @@ export function hitTest(e: Entity, p: Vec2, tol: number): boolean {
     case 'insert':
       // 中身を知らないので挿入点のまわりだけ。展開後の当たり判定は呼び出し側
       return dist(p, e.at) <= tol;
+    case 'dim': {
+      const g = dimGeometry(e);
+      if (!g) return e.points.some((q) => dist(p, q) <= tol);
+      for (const [a, b] of g.lines) if (distToSegment(p, a, b) <= tol) return true;
+      for (const tri of g.arrows) if (pointInPolygon(tri, p) || polylineHit(tri, true, p, tol)) return true;
+      if (g.text === '') return false;
+      const c = textCorners({
+        ...e,
+        kind: 'text',
+        at: g.textPos,
+        text: g.text,
+        height: g.textHeight,
+        rotation: g.textAngle,
+        hAlign: 'center',
+        vAlign: 'bottom',
+      });
+      return pointInPolygon(c, p) || polylineHit(c, true, p, tol);
+    }
   }
 }
 
@@ -352,6 +441,8 @@ export function translateEntity(e: Entity, d: Vec2): Entity {
       return { ...e, a: add(e.a, d), b: add(e.b, d) };
     case 'insert':
       return { ...e, at: add(e.at, d) };
+    case 'dim':
+      return { ...e, points: e.points.map((p) => add(p, d)) };
   }
 }
 
@@ -391,6 +482,9 @@ export function rotateEntity(e: Entity, c: Vec2, ang: number): Entity {
     }
     case 'insert':
       return { ...e, at: rotate(e.at, ang, c), rotation: e.rotation + ang };
+    case 'dim':
+      // 文字角は計測点から毎回作り直されるので、点を回すだけでよい
+      return { ...e, points: e.points.map((p) => rotate(p, ang, c)) };
   }
 }
 
@@ -424,6 +518,14 @@ export function scaleEntity(e: Entity, c: Vec2, k: number): Entity {
         scale: e.scale * Math.abs(k),
         // 0 は「X と同じ」の意味なので 0 のまま保つ
         scaleY: e.scaleY === 0 ? 0 : e.scaleY * Math.abs(k),
+      };
+    case 'dim':
+      // 文字高・矢印も一緒に拡縮する（0 は自動なのでそのまま 0 に保つ）
+      return {
+        ...e,
+        points: e.points.map(s),
+        height: e.height * Math.abs(k),
+        arrow: e.arrow * Math.abs(k),
       };
   }
 }
@@ -490,6 +592,10 @@ export function snapPoints(e: Entity): { kind: 'end' | 'mid' | 'center' | 'node'
     case 'insert':
       out.push({ kind: 'node', at: e.at });
       break;
+    case 'dim':
+      // 吸着するのは計測点（引出線の途中や矢印の頂点に吸うと使いにくい）
+      for (const p of e.points) out.push({ kind: 'node', at: p });
+      break;
   }
   return out;
 }
@@ -537,6 +643,12 @@ export function flatten(e: Entity, segmentsPerCircle = 64): Vec2[][] {
     case 'insert':
       // 中身はブロック定義にある。展開は `block.ts`
       return [];
+    case 'dim': {
+      const g = dimGeometry(e);
+      if (!g) return [];
+      // 引出線・寸法線と、閉じた矢印
+      return [...g.lines.map(([a, b]) => [a, b]), ...g.arrows.map((tri) => [...tri, tri[0]!])];
+    }
   }
 }
 
@@ -552,7 +664,8 @@ export function entityAnchor(e: Entity): Vec2 {
       return e.center;
     case 'polyline':
     case 'hatch':
-    case 'image': {
+    case 'image':
+    case 'dim': {
       const b = entityBounds(e);
       return vec((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
     }
@@ -572,6 +685,8 @@ export function entityLength(e: Entity): number {
       return e.radius * (norm2pi(e.endAngle - e.startAngle) || Math.PI * 2);
     case 'point':
     case 'text':
+    // 寸法の「長さ」は引出線の合計になってしまい意味がないので数えない
+    case 'dim':
       return 0;
     default: {
       let total = 0;

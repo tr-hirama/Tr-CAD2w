@@ -29,6 +29,8 @@ import type { Entity, LineStyleName, TextEntity } from '../core/entity.js';
 import { entityBounds, rectCorners } from '../core/entity.js';
 import { hatchSegments } from '../core/hatch.js';
 import { explodeInsert, type BlockDef } from '../core/block.js';
+import { DEFAULT_POINT_STYLE } from '../core/point-style.js';
+import { dimExplode } from '../core/dim-geom.js';
 import type { Layer } from '../core/layer.js';
 import { parseColor, type Rgb } from '../core/layer.js';
 import { EMPTY_AABB, aabbUnion, deg } from '../core/geometry.js';
@@ -303,6 +305,11 @@ function writeHeader(w: DxfWriter, json: DocumentJson, handleSeed: string): void
   w.int(70, 4); // 4 = ミリメートル
   w.pair(9, '$LTSCALE');
   w.pair(40, json.lineTypeScale);
+  // 点の表示スタイル（AutoCAD と同じ意味。0 は画面固定サイズ）
+  w.pair(9, '$PDMODE');
+  w.int(70, json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode);
+  w.pair(9, '$PDSIZE');
+  w.pair(40, json.pointStyle?.size ?? DEFAULT_POINT_STYLE.size);
   w.pair(9, '$CLAYER');
   w.pair(8, '0');
   w.pair(9, '$CECOLOR');
@@ -782,6 +789,12 @@ function writeEntity(w: DxfWriter, e: Entity): void {
 
     case 'insert':
       // `documentToDxf` が先に展開している（ここへは来ない）
+      break;
+
+    case 'dim':
+      // DXF の DIMENSION は寸法スタイル（DIMSTYLE）で見た目が変わるので、
+      // **見たままを渡せる線分・矢印・文字へ分解して出す**（デスクトップ版と同じ判断）
+      for (const part of dimExplode(e)) writeEntity(w, { ...part, id: e.id } as Entity);
       break;
   }
 }

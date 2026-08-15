@@ -124,6 +124,15 @@ function applyTransform(src: Entity, tr: (p: Vec2) => Vec2, sx: number, rot: num
       const c = [vec(marked.a.x, marked.a.y), vec(marked.b.x, marked.b.y)].map(tr);
       return { ...marked, a: c[0]!, b: c[1]! };
     }
+    case 'dim':
+      // 計測点だけ動かすと文字と矢印が取り残されるので、文字高・矢印長も拡縮する
+      // （寸法値そのものは計測点から毎回引き直すので触らない）
+      return {
+        ...marked,
+        points: marked.points.map(tr),
+        height: marked.height * Math.abs(sx),
+        arrow: marked.arrow * Math.abs(sx),
+      };
     case 'insert':
       // 呼び出し側で先に処理している（ここへは来ない）
       return marked;
