@@ -97,6 +97,74 @@ describe('CadDocument', () => {
   });
 });
 
+describe('壊れたファイルを読んだとき', () => {
+  it('読込に失敗しても今の図面を壊さない', () => {
+    // 「壊れたファイルでは初期化しない」約束。clear() を先に呼ぶと消える
+    const doc = docWithLines(3);
+    doc.lineTypeScale = 250;
+    const before = doc.count;
+
+    expect(() =>
+      doc.loadJson({ format: 'tr-cad2w', version: 1, lineTypeScale: 1, layers: [], entities: null as never }),
+    ).toThrow();
+    expect(doc.count).toBe(before);
+    expect(doc.lineTypeScale).toBe(250);
+  });
+
+  it('レイアウトが壊れていても今の図面を壊さない', () => {
+    const doc = docWithLines(2);
+    expect(() =>
+      doc.loadJson({
+        format: 'tr-cad2w',
+        version: 1,
+        lineTypeScale: 500,
+        layers: [],
+        entities: [],
+        layouts: [{ name: 'x', paper: 'A4', orientation: 'landscape', lineTypeScale: 5 } as never],
+      }),
+    ).toThrow();
+    expect(doc.count).toBe(2);
+  });
+
+  it('新しい形式のファイルでも今の図面を壊さない', () => {
+    const doc = docWithLines(2);
+    expect(() =>
+      doc.loadJson({ format: 'tr-cad2w', version: 999, lineTypeScale: 500, layers: [], entities: [] }),
+    ).toThrow();
+    expect(doc.count).toBe(2);
+  });
+});
+
+describe('新規図面', () => {
+  it('画層と線種尺度も既定へ戻す', () => {
+    const doc = new CadDocument();
+    doc.lineTypeScale = 250;
+    doc.layers.set({ name: '追加画層', color: '#ff0000', lineStyle: 'solid', visible: true, lineWidth: 0 });
+    doc.layers.remove('境界');
+
+    doc.clear();
+    expect(doc.lineTypeScale).toBe(500);
+    expect(doc.layers.get('追加画層')).toBeUndefined();
+    expect(doc.layers.get('境界')).toBeDefined();
+  });
+});
+
+describe('印刷に出る範囲', () => {
+  it('表示 OFF の画層は含めない', () => {
+    const doc = new CadDocument();
+    doc.add({ ...DEFAULT_ATTRS, kind: 'line', a: vec(0, 0), b: vec(100, 100) });
+    doc.add({ ...DEFAULT_ATTRS, layer: '境界', kind: 'line', a: vec(0, 0), b: vec(9000, 9000) });
+    expect(doc.printBounds()).toEqual({ minX: 0, minY: 0, maxX: 9000, maxY: 9000 });
+
+    const layer = doc.layers.get('境界')!;
+    doc.layers.set({ ...layer, visible: false });
+    // 非表示の画層まで含めると、刷られない図形にページを割いてしまう
+    expect(doc.printBounds()).toEqual({ minX: 0, minY: 0, maxX: 100, maxY: 100 });
+    // bounds() は全部を含んだまま（用途が違う）
+    expect(doc.bounds()).toEqual({ minX: 0, minY: 0, maxX: 9000, maxY: 9000 });
+  });
+});
+
 describe('保存と読込', () => {
   it('JSON 往復で図形・画層・線種尺度が保たれる', () => {
     const doc = docWithLines(2);

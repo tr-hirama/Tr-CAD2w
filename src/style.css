@@ -176,3 +176,167 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---- 印刷プレビュー ---- */
+
+.print-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.print-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1000px, 94vw);
+  height: min(760px, 92vh);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.print-dialog header,
+.print-dialog footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.print-dialog footer {
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+}
+
+.print-dialog header strong {
+  flex: 1;
+}
+
+.print-dialog button {
+  padding: 5px 12px;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.print-dialog button:hover {
+  background: var(--accent-weak);
+}
+
+.print-dialog button.primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.print-dialog footer .spacer {
+  flex: 1;
+}
+
+.print-body {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+.print-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+}
+
+.print-settings label {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.print-settings label.check {
+  grid-template-columns: auto 1fr;
+  justify-content: start;
+}
+
+.print-settings select,
+.print-settings input[type='number'] {
+  width: 110px;
+  padding: 3px 5px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.print-scale {
+  margin: 4px 0 0;
+  font-weight: 700;
+}
+
+.print-note {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8a3a00;
+  background: #fff4e5;
+  border: 1px solid #f0c48a;
+  border-radius: 3px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .print-note {
+    color: #ffd9a8;
+    background: #3a2a13;
+    border-color: #6b4a1d;
+  }
+}
+
+.print-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
+.print-dialog button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.print-preview canvas {
+  max-width: 100%;
+  max-height: 100%;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+}
+
+.print-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+  background: repeating-conic-gradient(rgba(128, 128, 128, 0.12) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+}
+
+.print-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+}

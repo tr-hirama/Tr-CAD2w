@@ -41,6 +41,8 @@ import { readDxfBytes } from '../io/dxf.js';
 import { defaultDxfFileName, documentToDxf } from '../io/dxf-write.js';
 import { defaultTc2FileName, readTc2, writeTc2 } from '../io/tc2.js';
 import { looksLikeZip } from '../io/zip.js';
+import { PrintDialog } from './print-dialog.js';
+import { DEFAULT_PRINT, type PrintSettings } from '../print/paper.js';
 
 interface Pointer {
   /** 押した画面座標。 */
@@ -61,6 +63,10 @@ export class CadApp {
   attrs: DrawAttrs = { ...DEFAULT_DRAW_ATTRS };
   snapSettings: SnapSettings = { ...DEFAULT_SNAP };
   render: RenderOptions = { ...DEFAULT_RENDER };
+  /** 印刷設定。ダイアログで変えた値を次回の既定として持ち回る。 */
+  printSettings: PrintSettings = { ...DEFAULT_PRINT };
+  /** 開いている印刷ダイアログ（同時に 1 つだけ）。 */
+  private printDialog: PrintDialog | null = null;
 
   private pointer: Pointer | null = null;
   private cursorWorld: Vec2 = vec(0, 0);
@@ -168,6 +174,25 @@ export class CadApp {
     }
     downloadText(defaultDxfFileName(new Date()), documentToDxf(this.doc.toJson()), 'application/dxf');
     this.setStatus(`DXF で書き出しました（${this.doc.count} 図形・UTF-8 / R2007）`);
+  }
+
+  /** 印刷プレビューを開く（PDF は印刷ダイアログの「PDF に保存」で得る）。 */
+  openPrintDialog(): void {
+    if (this.printDialog) return; // 二重に開かない（Ctrl+P 連打で重なると重い）
+    if (this.doc.count === 0) {
+      this.setStatus('印刷する図形がありません');
+      return;
+    }
+    this.printDialog = new PrintDialog(
+      {
+        doc: this.doc,
+        onSettingsChange: (s) => (this.printSettings = s),
+        onClose: () => (this.printDialog = null),
+      },
+      this.printSettings,
+    );
+    this.printDialog.open();
+    this.setStatus('印刷プレビューを開きました（←→ でページ送り・Esc で閉じる）');
   }
 
   async open(): Promise<void> {
@@ -372,6 +397,10 @@ export class CadApp {
   private bindKeyboard(): void {
     window.addEventListener('keydown', (ev) => {
       if (isTypingTarget(ev.target)) return;
+      // モーダル（印刷プレビュー）が出ている間は図面のキー操作を通さない。
+      // ダイアログ側も capture で止めているが、window へ直接 dispatch された
+      // 合成イベントは AT_TARGET 扱いで登録順に走るので、ここでも見る
+      if (this.printDialog) return;
       const key = ev.key.toLowerCase();
 
       if (ev.ctrlKey || ev.metaKey) {
@@ -396,6 +425,11 @@ export class CadApp {
           case 'o':
             ev.preventDefault();
             void this.open();
+            return;
+          case 'p':
+            // ブラウザ既定の印刷ではなく、図面用のプレビューを出す
+            ev.preventDefault();
+            this.openPrintDialog();
             return;
           default:
             return;
@@ -594,6 +628,9 @@ export class CadApp {
           break;
         case 'export-tc2':
           void this.exportTc2();
+          break;
+        case 'print':
+          this.openPrintDialog();
           break;
         case 'undo':
           this.undo();

@@ -11,6 +11,7 @@ import type { Entity, EntityColor, LineStyleName, NewEntity } from './entity.js'
 import { cloneEntity, entityBounds, hitTest } from './entity.js';
 import { LayerTable, STANDARD_LAYERS, type Layer } from './layer.js';
 import { SpatialIndex } from './spatial-index.js';
+import type { LayoutSpace } from './layout.js';
 
 /** 保存形式のバージョン。**破壊的変更のときだけ上げる。** */
 export const FILE_FORMAT_VERSION = 1;
@@ -22,6 +23,12 @@ export interface DocumentJson {
   lineTypeScale: number;
   layers: Layer[];
   entities: Entity[];
+  /**
+   * 用紙空間（レイアウト）。**省略可**。
+   * 無いファイル（この機能より前に保存したもの）も読めるよう任意にしてある
+   * ので、`FILE_FORMAT_VERSION` は上げていない。
+   */
+  layouts?: LayoutSpace[];
 }
 
 export const DEFAULT_LINETYPE_SCALE = 500;
@@ -39,6 +46,11 @@ export class CadDocument {
   readonly selection = new Set<number>();
   layers = new LayerTable(STANDARD_LAYERS);
   lineTypeScale = DEFAULT_LINETYPE_SCALE;
+  /**
+   * 用紙空間（レイアウト）。**モデル空間とは線種尺度が別**（用紙側は 5）。
+   * 同じ尺度だと A4 より長い破線になって実線に見えてしまう。
+   */
+  layouts: LayoutSpace[] = [];
 
   get entities(): readonly Entity[] {
     return this.entityList;
@@ -114,12 +126,16 @@ export class CadDocument {
     return before - this.entityList.length;
   }
 
+  /** 新規図面。**画層と線種尺度も既定へ戻す**（前の図面の設定を持ち越さない）。 */
   clear(): void {
     this.entityList = [];
+    this.layouts = [];
     this.selection.clear();
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this.nextId = 1;
+    this.layers = new LayerTable(STANDARD_LAYERS);
+    this.lineTypeScale = DEFAULT_LINETYPE_SCALE;
     this.afterMutate();
   }
 
@@ -176,6 +192,20 @@ export class CadDocument {
     return box;
   }
 
+  /**
+   * **印刷に出る範囲**（表示 ON の画層だけ）。
+   *
+   * `bounds()` は非表示の画層も含むので、印刷の尺度やページ数をそれで決めると
+   * 刷られない図形にページを割いてしまう（白紙が混ざる・図面が小さく刷られる）。
+   */
+  printBounds(): Aabb {
+    let box = EMPTY_AABB;
+    for (const e of this.entityList) {
+      if (this.layers.isVisible(e.layer)) box = aabbUnion(box, entityBounds(e));
+    }
+    return box;
+  }
+
   selectedEntities(): Entity[] {
     return this.entityList.filter((e) => this.selection.has(e.id));
   }
@@ -206,27 +236,69 @@ export class CadDocument {
   }
 
   toJson(): DocumentJson {
-    return {
+    const json: DocumentJson = {
       format: 'tr-cad2w',
       version: FILE_FORMAT_VERSION,
       lineTypeScale: this.lineTypeScale,
       layers: this.layers.all(),
       entities: this.entityList.map(cloneEntity),
     };
+    // レイアウトが無い図面には layouts を出さない（古い読み手を驚かせない）
+    if (this.layouts.length > 0) {
+      json.layouts = this.layouts.map((l) => ({
+        ...l,
+        entities: l.entities.map(cloneEntity),
+        viewports: l.viewports.map((v) => ({ ...v, paperRect: { ...v.paperRect } })),
+      }));
+    }
+    return json;
   }
 
-  /** JSON から読み直す（前の図面・選択・Undo はすべて捨てる）。 */
+  /**
+   * JSON から読み直す（前の図面・選択・Undo はすべて捨てる）。
+   *
+   * **中身をすべて組み立ててから差し替える。** 途中で例外が出ても
+   * いま開いている図面を壊さない（`clear()` を先に呼ぶと、壊れたファイルで
+   * 図面が消える）。
+   */
   loadJson(json: DocumentJson): void {
     if (json.format !== 'tr-cad2w') throw new Error('図面形式が違います（format が tr-cad2w ではありません）');
     if (json.version > FILE_FORMAT_VERSION) {
       throw new Error(`このファイルは新しい形式です（version ${json.version}）。アプリを更新してください`);
     }
+    if (!Array.isArray(json.entities)) throw new Error('図面ファイルの内容が壊れています（entities がありません）');
+
+    // ---- ここから下は例外が出ても現状を壊さない（ローカルに組み立てるだけ）
+    const layerList = Array.isArray(json.layers) && json.layers.length > 0 ? json.layers : STANDARD_LAYERS;
+    const layers = new LayerTable(layerList);
+    const entities = json.entities.map(cloneEntity);
+    const layouts = (json.layouts ?? []).map((l) => {
+      if (!Array.isArray(l.entities) || !Array.isArray(l.viewports)) {
+        throw new Error('図面ファイルの内容が壊れています（レイアウトが不正です）');
+      }
+      return {
+        ...l,
+        entities: l.entities.map(cloneEntity),
+        viewports: l.viewports.map((v) => ({ ...v, paperRect: { ...v.paperRect } })),
+      };
+    });
+    const lineTypeScale =
+      Number.isFinite(json.lineTypeScale) && json.lineTypeScale > 0 ? json.lineTypeScale : DEFAULT_LINETYPE_SCALE;
+
+    // ---- ここから差し替え
     this.clear();
-    this.layers = new LayerTable(json.layers.length > 0 ? json.layers : STANDARD_LAYERS);
-    this.lineTypeScale = json.lineTypeScale > 0 ? json.lineTypeScale : DEFAULT_LINETYPE_SCALE;
-    this.entityList = json.entities.map(cloneEntity);
-    this.nextId = this.entityList.reduce((m, e) => Math.max(m, e.id), 0) + 1;
+    this.layers = layers;
+    this.lineTypeScale = lineTypeScale;
+    this.entityList = entities;
+    this.layouts = layouts;
+    // id は用紙空間の図形とも重ならないよう、全体の最大から続ける
+    const maxId = [...this.entityList, ...this.layouts.flatMap((l) => l.entities)].reduce(
+      (m, e) => Math.max(m, e.id),
+      0,
+    );
+    this.nextId = maxId + 1;
     for (const e of this.entityList) this.layers.ensure(e.layer);
+    for (const l of this.layouts) for (const e of l.entities) this.layers.ensure(e.layer);
     this.afterMutate();
   }
 

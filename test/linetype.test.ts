@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dashArrayPx, lineWidthPx, patternInMm } from '../src/render/linetype.js';
+import { HAIRLINE_MM, dashArrayPx, lineWidthPx, patternInMm, printLineWidthPx } from '../src/render/linetype.js';
 
 describe('線種の刻み', () => {
   it('刻みは図面寸法（mm）× 線種尺度で決まる', () => {
@@ -32,5 +32,25 @@ describe('線幅', () => {
   it('太い線は mm に比例する（ズームには追従しない）', () => {
     expect(lineWidthPx(0.5, 1)).toBe(1);
     expect(lineWidthPx(2, 1)).toBe(4);
+  });
+});
+
+describe('印刷の線幅', () => {
+  const pxPerMm = 300 / 25.4; // 300dpi
+
+  it('紙の上で実寸になる', () => {
+    expect(printLineWidthPx(1, pxPerMm)).toBeCloseTo(11.81, 2);
+    expect(printLineWidthPx(0.5, pxPerMm)).toBeCloseTo(5.91, 2);
+  });
+
+  it('極細は 0.18mm として出す（画面の 1px を使うと灰色の線になる）', () => {
+    expect(HAIRLINE_MM).toBe(0.18);
+    expect(printLineWidthPx(0, pxPerMm)).toBeCloseTo(0.18 * pxPerMm, 6);
+    // 300dpi では 2px 以上あるので黒く出る
+    expect(printLineWidthPx(0, pxPerMm)).toBeGreaterThan(2);
+  });
+
+  it('低解像度でも 1px は確保する', () => {
+    expect(printLineWidthPx(0, 72 / 25.4)).toBeGreaterThanOrEqual(1);
   });
 });
