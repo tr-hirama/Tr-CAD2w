@@ -21,11 +21,30 @@ description: Tr-CAD2w の改修1件を、issue→ブランチ→実装→テス�
 | PR の **approve** | `main` へ merge commit → ブランチ削除 → issue が閉じたか確認 |
 | PR の **changes requested** / コメント | 指摘を直して同じブランチへ push |
 
-**巡回では必ず「新規 issue」も見る。** ラベルとコメントだけを見ていると、ラベルの付いていない新しい issue を丸ごと見落とす（実際に #19「スラックへ通知」を 13 時間見落とした）。
+### 巡回では毎回この3つを見る
+
+**ラベルだけを見る巡回は指示を落とす。** issue / PR のコメントは、ラベルと無関係に指示として飛んでくる
+（実際に #34「直して」・#36「提案して」・#39「B」・#28「表示のみ」を、`着手可` が付いていないという
+理由で 12 時間見落とした）。**毎回この 3 本を続けて実行する。**
 
 ```bash
-gh issue list --state open --search "created:>=<前回巡回時刻>" --json number,title,author
+# 1. 開いている PR（approve / changes requested / コメント）
+gh pr list --state open
+
+# 2. issue と PR の新着コメント（PR のコメントもここに出る）
+gh api "repos/tr-hirama/Tr-CAD2w/issues/comments?sort=created&direction=desc&per_page=20" \
+  --jq '.[] | "\(.created_at)\t#\(.issue_url | split("/") | last)\t\(.body | gsub("\r?\n"; " ") | .[0:100])"'
+
+# 3. 全 issue のラベルとコメント（新規 issue の見落としも同時に防ぐ）
+gh issue list --state open --limit 50 --json number,title,labels,comments \
+  --jq '.[] | "#\(.number) [\([.labels[].name]|join(","))] \(.title)\n" + ([.comments[] | "  [\(.createdAt)] \(.body | gsub("\r?\n"; " ") | .[0:120])"] | join("\n"))'
 ```
+
+**2 の出力は自分のコメントと利用者のコメントが混ざる**（同じアカウントで投稿するため）。
+短い断定（`Ok` / `B` / `直して` / `今は不要`）は利用者、長い説明は自分、と本文で見分ける。
+**利用者のコメントが各 issue の末尾にあり、自分の応答が続いていなければ未処理。**
+
+`--limit` / `head` で切ると下位の issue のラベル変更を見落とす。**3 は全件出す。**
 
 判断が必要になったら **`要確認` を付けて issue にコメントし、返事があるまでその issue は止める**（他の `着手可` は進めてよい）。依存がある issue は `着手可` が付いていても**依存先が済むまで着手せず、その旨をコメント**する。
 
