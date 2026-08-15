@@ -56,6 +56,7 @@ import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '../core/layer.js';
 import { looksLikeZip, unzip, zip } from './zip.js';
 import { DEFAULT_POINT_STYLE, normalizeMode } from '../core/point-style.js';
+import { isKenTableEmpty, normalizeKenTable, type KenTable } from '../survey/ken.js';
 import {
   emptyDocumentInfo,
   isDocumentInfoEmpty,
@@ -124,6 +125,15 @@ export interface Tc2CommentDto {
   Text?: string | null;
 }
 
+/** まわりけん（デスクトップ版 `SurveyKenDto(Name, Measured, CalcDist, Unable)`）。 */
+export interface Tc2KenDto {
+  Name?: string | null;
+  /** 実測値。**デスクトップ版が文字列で持つ**ので文字列のまま扱う。 */
+  Measured?: string | null;
+  CalcDist?: number;
+  Unable?: boolean;
+}
+
 /** 境界コメント（デスクトップ版 `KyokaiCommentDto`）。 */
 export interface Tc2KyokaiDto {
   Name?: string | null;
@@ -143,6 +153,10 @@ export interface Tc2DocDto {
   Project?: Tc2ProjectDto | null;
   Comments?: Tc2CommentDto[] | null;
   Kyokai?: Tc2KyokaiDto[] | null;
+  /** まわりけん（0 件のときデスクトップ版は出さない）。 */
+  Ken?: Tc2KenDto[] | null;
+  /** 計算点あり（デスクトップ版 `Keisanten`。常に出る）。 */
+  Keisanten?: boolean;
   MemoText?: string | null;
   /** 手書きメモ（Windows Ink の ISF を Base64 化）。**解釈せず素通しする。** */
   MemoInk?: string | null;
@@ -285,12 +299,11 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   }
 
   // 図形以外で落ちるもの（利用者に伝えるため名前だけ拾う）。
-  // **概要・コメント・境界コメント・メモは取り込むのでここには挙げない**
+  // **概要・コメント・境界コメント・メモ・まわりけんは取り込むのでここには挙げない**
   const droppedSections: string[] = [];
   const SECTION_LABEL: Record<string, string> = {
     Obs: '観測データ',
     Coord: '座標',
-    Ken: 'まわりけん',
     Level: 'レベル',
     Transform: '座標変換',
     Blocks: 'ブロック定義',
@@ -334,6 +347,8 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   if (blocks.length > 0) json.blocks = blocks;
   const info = tc2InfoToDocument(dto);
   if (!isDocumentInfoEmpty(info)) json.info = info;
+  const ken = tc2KenToDocument(dto);
+  if (!isKenTableEmpty(ken)) json.ken = ken;
   return { json, skipped, droppedSections };
 }
 
@@ -356,6 +371,19 @@ export function tc2InfoToDocument(dto: Tc2DocDto): DocumentInfo {
   // 手書きメモは中身を見ない（Windows Ink の ISF。Web では描けない）
   info.memoInk = dto.MemoInk ?? '';
   return info;
+}
+
+/** `.tc2` のまわりけん → Web 版の表。**値は解釈せずそのまま持つ**（表示だけのため）。 */
+export function tc2KenToDocument(dto: Tc2DocDto): KenTable {
+  const rows = (dto.Ken ?? [])
+    .filter((k): k is Tc2KenDto => k !== null && k !== undefined)
+    .map((k) => ({
+      name: k.Name ?? '',
+      measured: k.Measured ?? '',
+      calcDist: Number.isFinite(k.CalcDist) ? Number(k.CalcDist) : 0,
+      unable: k.Unable === true,
+    }));
+  return { rows, keisanten: dto.Keisanten === true };
 }
 
 function buildEntity(d: Tc2EntityDto, layerColor: Map<string, string>): NewEntity | null {
@@ -528,6 +556,20 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     if (info.memoText !== '') out.MemoText = info.memoText;
     // **読んだままを書き戻す。** Web では描けないが、消してはいけない
     if (info.memoInk !== '') out.MemoInk = info.memoInk;
+  }
+
+  const ken = normalizeKenTable(json.ken);
+  // 0 件のときデスクトップ版は Ken を出さない。合わせる
+  if (ken.rows.length > 0) {
+    out.Ken = ken.rows.map((r) => ({
+      Name: r.name,
+      Measured: r.measured,
+      CalcDist: r.calcDist,
+      Unable: r.unable,
+    }));
+  }
+  if (ken.keisanten) {
+    out.Keisanten = true;
   }
   return out;
 }

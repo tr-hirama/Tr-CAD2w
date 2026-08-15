@@ -14,6 +14,8 @@ const app = new CadApp(required<HTMLCanvasElement>('canvas'), {
   info: required('info'),
   layerList: required('layer-list'),
   layoutTabs: required('layout-tabs'),
+  kenPanel: required('ken-panel'),
+  kenList: required('ken-list'),
 });
 
 // 動作確認用。開発者ツールから `TrCad2w.snapshot()` などを叩ける

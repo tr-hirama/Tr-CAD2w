@@ -378,3 +378,35 @@ body {
   background: #fff;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
+
+/* まわりけん（表示だけ。issue #28） */
+#ken-panel .ken-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+#ken-panel .ken-table th {
+  text-align: left;
+  font-weight: 600;
+  opacity: 0.7;
+  padding: 1px 4px 1px 0;
+}
+#ken-panel .ken-table td {
+  padding: 1px 4px 1px 0;
+  white-space: nowrap;
+}
+/* 3 列目（計算値）は右揃えにして桁を比べやすくする */
+#ken-panel .ken-table td:nth-child(3),
+#ken-panel .ken-table th:nth-child(3) {
+  text-align: right;
+}
+/* 測れない辺は薄く見せる（対象外だと分かるように） */
+#ken-panel .ken-table tr.unable td {
+  opacity: 0.5;
+}
+#ken-panel .ken-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  opacity: 0.75;
+  line-height: 1.4;
+}

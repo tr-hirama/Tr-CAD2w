@@ -72,6 +72,7 @@ import {
   type ToolName,
 } from './tools.js';
 import { ErrorGuard } from './error-guard.js';
+import { summarize as summarizeKen } from '../survey/ken.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import { formatBenchResult, runRenderBench, type BenchResult } from '../render/bench.js';
 import {
@@ -133,6 +134,9 @@ export class CadApp {
       layerList: HTMLElement;
       /** 空間（モデル / レイアウト）の切替タブ。 */
       layoutTabs: HTMLElement;
+      /** まわりけんの枠（無い図面では隠す）。 */
+      kenPanel: HTMLElement;
+      kenList: HTMLElement;
     },
   ) {
     this.renderer = new Renderer(canvas);
@@ -144,6 +148,7 @@ export class CadApp {
     this.bindToolbar();
     this.bindDragAndDrop();
     this.buildLayerList();
+    this.buildKenList();
     this.buildLayoutTabs();
 
     const ro = new ResizeObserver(() => this.handleResize());
@@ -321,6 +326,7 @@ export class CadApp {
         this.setStatus(`${picked.name} を開きました（${this.doc.count} 図形）`);
       }
       this.buildLayerList();
+      this.buildKenList();
       this.zoomFit();
     } catch (err) {
       this.setStatus(`${picked.name} を開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
@@ -1463,6 +1469,62 @@ export class CadApp {
     }
   }
 
+  /**
+   * まわりけんの一覧（**表示だけ**。issue #28 の「入力・照合は行わない」）。
+   *
+   * `.tc2` から読んだ値をそのまま並べる。**周長は境界が連番で揃っているときだけ**
+   * 出し、欠番があれば理由を添えて出さない（欠けた辺のぶん短い値が出て、
+   * 正しく見えてしまうため）。まわりけんが無い図面では枠ごと隠す。
+   */
+  private buildKenList(): void {
+    const panel = this.ui.kenPanel;
+    const host = this.ui.kenList;
+    if (!panel || !host) return;
+    const table = this.doc.ken;
+    panel.hidden = table.rows.length === 0 && !table.keisanten;
+    if (panel.hidden) return;
+
+    host.textContent = '';
+    if (table.keisanten) {
+      const note = document.createElement('p');
+      note.className = 'ken-note';
+      note.textContent = '計算点あり（デスクトップ版では実測入力を使いません）';
+      host.append(note);
+    }
+
+    if (table.rows.length > 0) {
+      const t = document.createElement('table');
+      t.className = 'ken-table';
+      const head = document.createElement('tr');
+      for (const label of ['境界', '実測', '計算']) {
+        const th = document.createElement('th');
+        th.textContent = label;
+        head.append(th);
+      }
+      t.append(head);
+      for (const r of table.rows) {
+        const tr = document.createElement('tr');
+        if (r.unable) tr.className = 'unable';
+        const name = document.createElement('td');
+        name.textContent = r.unable ? `${r.name}（不可）` : r.name;
+        const measured = document.createElement('td');
+        measured.textContent = r.measured;
+        const calc = document.createElement('td');
+        calc.textContent = formatMm(r.calcDist);
+        tr.append(name, measured, calc);
+        t.append(tr);
+      }
+      host.append(t);
+    }
+
+    const s = summarizeKen(table);
+    const sum = document.createElement('p');
+    sum.className = 'ken-note';
+    sum.textContent =
+      s.perimeter === null ? s.reason : `周長 ${formatMm(s.perimeter)}mm（${s.count} 辺・不可 ${s.unableCount}）`;
+    host.append(sum);
+  }
+
   private buildLayerList(): void {
     const host = this.ui.layerList;
     host.textContent = '';
@@ -1682,6 +1744,12 @@ export function base64OfBytes(bytes: Uint8Array): string {
 /** 縮尺の分母の表示（`1:200` / `1:2.5`）。整数はそのまま、端数だけ小数で見せる。 */
 export function formatDenominator(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+/** まわりけんの長さ表示（mm）。整数はそのまま、端数は 3 桁まで。 */
+function formatMm(v: number): string {
+  if (!Number.isFinite(v)) return '—';
+  return Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 /** 閉じた点列の**辺の近く**か（ビューポートの枠を掴むのに使う）。 */
