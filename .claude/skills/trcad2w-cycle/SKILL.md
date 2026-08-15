@@ -19,6 +19,7 @@ description: Tr-CAD2w の改修1件を、issue→ブランチ→実装→テス�
 | issue に **`着手可`** ラベル | その issue に着手（複数あれば**番号の小さい順**）。着手したら `作業中` に差し替え、PR を出したら外す |
 | issue の**コメント** | 仕様の指示・質問への回答として読み、実装に反映する |
 | PR の **approve** | `main` へ merge commit → ブランチ削除 → issue が閉じたか確認 |
+| PR に **`着手可`** ラベル | **approve と同じ**（＝マージしてよい）。番号の小さい順にマージする |
 | PR の **changes requested** / コメント | 指摘を直して同じブランチへ push |
 
 ### 巡回では毎回この3つを見る
@@ -27,9 +28,14 @@ description: Tr-CAD2w の改修1件を、issue→ブランチ→実装→テス�
 （実際に #34「直して」・#36「提案して」・#39「B」・#28「表示のみ」を、`着手可` が付いていないという
 理由で 12 時間見落とした）。**毎回この 3 本を続けて実行する。**
 
+**`gh issue list` に PR は出ない。** ラベルは issue と PR の両方に付くので、**1 と 3 の両方でラベルを出す**
+（実際に PR #46 / #48 / #49 / #50 の `着手可` を、1 でラベルを出さず 3 に PR が含まれないせいで
+まるごと見落とした）。
+
 ```bash
-# 1. 開いている PR（approve / changes requested / コメント）
-gh pr list --state open
+# 1. 開いている PR（**ラベル必須**。approve / changes requested / コメント）
+gh pr list --state open --json number,title,labels,mergeable,mergeStateStatus \
+  --jq '.[] | "#\(.number) [\([.labels[].name]|join(","))] \(.mergeable) \(.title)"'
 
 # 2. issue と PR の新着コメント（PR のコメントもここに出る）
 gh api "repos/tr-hirama/Tr-CAD2w/issues/comments?sort=created&direction=desc&per_page=20" \
@@ -45,6 +51,10 @@ gh issue list --state open --limit 50 --json number,title,labels,comments \
 **利用者のコメントが各 issue の末尾にあり、自分の応答が続いていなければ未処理。**
 
 `--limit` / `head` で切ると下位の issue のラベル変更を見落とす。**3 は全件出す。**
+
+**1 でラベルが出たら、それは指示。** `着手可` が付いた PR は番号の小さい順にマージする。
+先にマージした PR と競合したら、後続のブランチで `git merge origin/main` して解消 →
+テスト → push → マージ、の順で 1 本ずつ通す。
 
 判断が必要になったら **`要確認` を付けて issue にコメントし、返事があるまでその issue は止める**（他の `着手可` は進めてよい）。依存がある issue は `着手可` が付いていても**依存先が済むまで着手せず、その旨をコメント**する。
 
