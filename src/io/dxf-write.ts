@@ -27,6 +27,7 @@
 import type { DocumentJson } from '../core/document.js';
 import type { Entity, LineStyleName, TextEntity } from '../core/entity.js';
 import { entityBounds } from '../core/entity.js';
+import { DEFAULT_POINT_STYLE } from '../core/point-style.js';
 import { dimExplode } from '../core/dim-geom.js';
 import type { Layer } from '../core/layer.js';
 import { parseColor, type Rgb } from '../core/layer.js';
@@ -285,6 +286,11 @@ function writeHeader(w: DxfWriter, json: DocumentJson, handleSeed: string): void
   w.int(70, 4); // 4 = ミリメートル
   w.pair(9, '$LTSCALE');
   w.pair(40, json.lineTypeScale);
+  // 点の表示スタイル（AutoCAD と同じ意味。0 は画面固定サイズ）
+  w.pair(9, '$PDMODE');
+  w.int(70, json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode);
+  w.pair(9, '$PDSIZE');
+  w.pair(40, json.pointStyle?.size ?? DEFAULT_POINT_STYLE.size);
   w.pair(9, '$CLAYER');
   w.pair(8, '0');
   w.pair(9, '$CECOLOR');
