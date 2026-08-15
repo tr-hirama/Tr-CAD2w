@@ -148,14 +148,20 @@ export const OK_MM = 20;
 export const WARN_MM = 50;
 
 /**
- * しきい値を比べるときの許容。
+ * 誤差(mm)を出す。**μm で丸めてから返す。**
  *
  * `10.050 - 10` は `0.05000000000000071` になるので、素直に比べると
- * **ちょうど 50mm が Over（赤）に落ちる**。1e-9 mm の差は測量では意味を持たない。
- * デスクトップ版（C#）も同じ浮動小数の癖を持つが、そちらの偶然の挙動ではなく
- * **境界値は等号側に入れる**方を採る。
+ * **ちょうど 50mm が Over（赤）に落ちる**。しかもこのズレは座標が大きいほど育つ
+ * （`123456.050 - 123456.000` は mm にすると `50.00000000291038`）。
+ * **固定の許容値では吸収しきれない**ので、比べる前に丸める。
+ *
+ * μm を選んだのは、まわりけんの実測が mm 単位で入る値であり、図面座標から出した
+ * 計算値もそれより細かい桁に意味を持たないため。**丸めで消えるのは浮動小数の
+ * ゴミだけ**で、入力から生じる差は残る。これで**境界値は必ず等号側に入る**。
  */
-const EPS_MM = 1e-9;
+function gosaMm(measured: number, calcDist: number): number {
+  return Math.round(Math.abs(measured - calcDist) * 1e6) / 1e3;
+}
 
 /**
  * まわりけんと計算値の誤差を判定する（デスクトップ版 `MawarikenRow.ConfirmGosa` の移植）。
@@ -181,9 +187,9 @@ export function confirmGosa(row: KenRow): KenGosa {
   if (!Number.isFinite(m)) return { text: '－', level: 'ng', mm: null };
   if (!(row.calcDist > 0)) return { text: 'No point', level: 'ng', mm: null };
 
-  const mm = Math.abs(m - row.calcDist) * 1000;
-  if (mm <= OK_MM + EPS_MM) return { text: (mm / 1000).toFixed(3), level: 'ok', mm };
-  if (mm <= WARN_MM + EPS_MM) return { text: (mm / 1000).toFixed(3), level: 'warn', mm };
+  const mm = gosaMm(m, row.calcDist);
+  if (mm <= OK_MM) return { text: (mm / 1000).toFixed(3), level: 'ok', mm };
+  if (mm <= WARN_MM) return { text: (mm / 1000).toFixed(3), level: 'warn', mm };
   return { text: 'Over', level: 'ng', mm };
 }
 
