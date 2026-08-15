@@ -19,6 +19,7 @@
  * | `LineType`（`Continuous`…） | `lineStyle`（`solid`…） | 1 対 1 |
  * | `LineWeight`（mm） | `lineWidth`（mm） | そのまま |
  * | `LtScale` | `lineTypeScale` | 無ければ 500 |
+ * | `PointMode` / `PointSize` | `pointStyle`（`PDMODE` / `PDSIZE` 相当） | 無ければ `＋`・画面固定 |
  *
  * ## 落ちる情報
  *
@@ -42,6 +43,7 @@ import { deg } from '../core/geometry.js';
 import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '../core/layer.js';
 import { looksLikeZip, unzip, zip } from './zip.js';
+import { DEFAULT_POINT_STYLE, normalizeMode } from '../core/point-style.js';
 
 /** `.tc2` の中の JSON エントリ名（デスクトップ版 `CadDocument.Tc2Entry`）。 */
 export const TC2_ENTRY = 'TrCad2D.json';
@@ -75,6 +77,10 @@ export interface Tc2DocDto {
   CurrentLayer: string;
   Entities: Tc2EntityDto[];
   LtScale?: number | null;
+  /** 点の表示モード（`PDMODE` 相当）。 */
+  PointMode?: number | null;
+  /** 点の表示サイズ（`PDSIZE` 相当。0 は画面固定）。 */
+  PointSize?: number | null;
   [key: string]: unknown; // 測量データなど、Web 版が使わない項目はそのまま無視する
 }
 
@@ -213,6 +219,13 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
       lineTypeScale: ltScale,
       layers,
       entities,
+      pointStyle: {
+        mode: normalizeMode(typeof dto.PointMode === 'number' ? dto.PointMode : DEFAULT_POINT_STYLE.mode),
+        size:
+          typeof dto.PointSize === 'number' && Number.isFinite(dto.PointSize) && dto.PointSize >= 0
+            ? dto.PointSize
+            : DEFAULT_POINT_STYLE.size,
+      },
     },
     skipped,
     droppedSections,
@@ -303,6 +316,8 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
     CurrentLayer: '0',
     Entities: entities,
     LtScale: json.lineTypeScale,
+    PointMode: json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode,
+    PointSize: json.pointStyle?.size ?? DEFAULT_POINT_STYLE.size,
   };
 }
 

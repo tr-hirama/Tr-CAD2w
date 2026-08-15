@@ -24,6 +24,7 @@ import type { Entity, LineStyleName, NewEntity, TextEntity } from '../core/entit
 import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer } from '../core/layer.js';
 import { rad, vec, type Vec2 } from '../core/geometry.js';
+import { DEFAULT_POINT_STYLE, normalizeMode, type PointStyle } from '../core/point-style.js';
 
 // ---- 文字コードの判定 ----------------------------------------------------
 
@@ -262,24 +263,32 @@ export function dxfToDocumentJson(text: string): DxfReadResult {
       lineTypeScale: header.lineTypeScale,
       layers,
       entities: entities.map((e, i) => ({ ...e, id: i + 1 }) as Entity),
+      pointStyle: header.pointStyle,
     },
     skipped,
   };
 }
 
-function readHeader(pairs: readonly DxfPair[]): { lineTypeScale: number } {
+function readHeader(pairs: readonly DxfPair[]): { lineTypeScale: number; pointStyle: PointStyle } {
   let lineTypeScale = DEFAULT_LINETYPE_SCALE;
+  const pointStyle: PointStyle = { ...DEFAULT_POINT_STYLE };
   for (let i = 0; i < pairs.length; i++) {
     const p = pairs[i]!;
     if (p.code === 0 && p.value.trim() === 'ENDSEC') break;
     if (p.code !== 9) continue;
-    if (p.value.trim() === '$LTSCALE') {
-      const v = Number.parseFloat(pairs[i + 1]?.value ?? '');
+    const name = p.value.trim();
+    const v = Number.parseFloat(pairs[i + 1]?.value ?? '');
+    if (name === '$LTSCALE') {
       // 0 以下は不正。既定値のままにする
       if (Number.isFinite(v) && v > 0) lineTypeScale = v;
+    } else if (name === '$PDMODE') {
+      if (Number.isFinite(v)) pointStyle.mode = normalizeMode(v);
+    } else if (name === '$PDSIZE') {
+      // AutoCAD は負値を「画面比のサイズ」に使うが、Web 版は持たないので画面固定（0）にする
+      if (Number.isFinite(v)) pointStyle.size = v > 0 ? v : 0;
     }
   }
-  return { lineTypeScale };
+  return { lineTypeScale, pointStyle };
 }
 
 function readLayers(pairs: readonly DxfPair[]): Layer[] {

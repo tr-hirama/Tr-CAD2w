@@ -12,6 +12,7 @@ import { cloneEntity, entityBounds, hitTest } from './entity.js';
 import { LayerTable, STANDARD_LAYERS, type Layer } from './layer.js';
 import { SpatialIndex } from './spatial-index.js';
 import type { LayoutSpace } from './layout.js';
+import { DEFAULT_POINT_STYLE, normalizeMode, type PointStyle } from './point-style.js';
 
 /** 保存形式のバージョン。**破壊的変更のときだけ上げる。** */
 export const FILE_FORMAT_VERSION = 1;
@@ -29,6 +30,12 @@ export interface DocumentJson {
    * ので、`FILE_FORMAT_VERSION` は上げていない。
    */
   layouts?: LayoutSpace[];
+  /**
+   * 点の表示スタイル（`PDMODE` / `PDSIZE` 相当）。**省略可**
+   * （この機能より前のファイルも読めるよう任意にしてあるので
+   * `FILE_FORMAT_VERSION` は上げていない）。
+   */
+  pointStyle?: PointStyle;
 }
 
 export const DEFAULT_LINETYPE_SCALE = 500;
@@ -46,6 +53,8 @@ export class CadDocument {
   readonly selection = new Set<number>();
   layers = new LayerTable(STANDARD_LAYERS);
   lineTypeScale = DEFAULT_LINETYPE_SCALE;
+  /** 点の表示スタイル（図面全体で共有。`PDMODE` / `PDSIZE` 相当）。 */
+  pointStyle: PointStyle = { ...DEFAULT_POINT_STYLE };
   /**
    * 用紙空間（レイアウト）。**モデル空間とは線種尺度が別**（用紙側は 5）。
    * 同じ尺度だと A4 より長い破線になって実線に見えてしまう。
@@ -136,6 +145,7 @@ export class CadDocument {
     this.nextId = 1;
     this.layers = new LayerTable(STANDARD_LAYERS);
     this.lineTypeScale = DEFAULT_LINETYPE_SCALE;
+    this.pointStyle = { ...DEFAULT_POINT_STYLE };
     this.afterMutate();
   }
 
@@ -242,6 +252,7 @@ export class CadDocument {
       lineTypeScale: this.lineTypeScale,
       layers: this.layers.all(),
       entities: this.entityList.map(cloneEntity),
+      pointStyle: { ...this.pointStyle },
     };
     // レイアウトが無い図面には layouts を出さない（古い読み手を驚かせない）
     if (this.layouts.length > 0) {
@@ -284,11 +295,20 @@ export class CadDocument {
     });
     const lineTypeScale =
       Number.isFinite(json.lineTypeScale) && json.lineTypeScale > 0 ? json.lineTypeScale : DEFAULT_LINETYPE_SCALE;
+    // 点スタイルは省略可。壊れた値は既定へ落とす（描けなくならないように）
+    const pointStyle: PointStyle = {
+      mode: normalizeMode(json.pointStyle?.mode ?? DEFAULT_POINT_STYLE.mode),
+      size:
+        Number.isFinite(json.pointStyle?.size) && (json.pointStyle?.size ?? 0) >= 0
+          ? (json.pointStyle?.size ?? 0)
+          : DEFAULT_POINT_STYLE.size,
+    };
 
     // ---- ここから差し替え
     this.clear();
     this.layers = layers;
     this.lineTypeScale = lineTypeScale;
+    this.pointStyle = pointStyle;
     this.entityList = entities;
     this.layouts = layouts;
     // id は用紙空間の図形とも重ならないよう、全体の最大から続ける

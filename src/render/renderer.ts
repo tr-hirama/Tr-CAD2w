@@ -14,6 +14,7 @@ import { TEXT_LINE_GAP, angleToPoint, flatten, rectCorners } from '../core/entit
 import { effectiveColor, effectiveLineStyle, isLightBackground, type ColorContext } from '../core/layer.js';
 import { dashArrayPx, lineWidthPx, printLineWidthPx } from './linetype.js';
 import type { SnapResult } from '../core/snap.js';
+import { isPointVisible, pointMarker, type PointStyle } from '../core/point-style.js';
 
 export interface RenderOptions {
   background: string;
@@ -146,7 +147,7 @@ export class Renderer {
 
     switch (e.kind) {
       case 'point':
-        this.drawPointMarker(view.toScreen(e.at));
+        this.drawPointMarker(view.toScreen(e.at), doc.pointStyle, view.scale);
         break;
       case 'text':
         this.drawText(e, view, color);
@@ -211,15 +212,35 @@ export class Renderer {
     ctx.stroke();
   }
 
-  private drawPointMarker(c: Vec2): void {
+  /**
+   * 点マーカー。**形とサイズは図面全体の点スタイル**（`PDMODE` / `PDSIZE` 相当）で決まる。
+   * 組み立ては `point-style.ts` の純関数に任せ、ここは描くだけ。
+   */
+  private drawPointMarker(c: Vec2, style: PointStyle, viewScale: number): void {
+    if (!isPointVisible(style.mode)) return;
     const ctx = this.ctx;
-    const s = 3;
-    ctx.beginPath();
-    ctx.moveTo(c.x - s, c.y);
-    ctx.lineTo(c.x + s, c.y);
-    ctx.moveTo(c.x, c.y - s);
-    ctx.lineTo(c.x, c.y + s);
-    ctx.stroke();
+    const m = pointMarker(style, c, viewScale);
+
+    ctx.setLineDash([]); // 点マーカーは線種の刻みを持たない
+    if (m.lines.length > 0) {
+      ctx.beginPath();
+      for (const [a, b] of m.lines) {
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+      }
+      ctx.stroke();
+    }
+    if (m.dotRadius > 0) {
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, m.dotRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (m.circle) {
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, m.half, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (m.square) ctx.strokeRect(c.x - m.half, c.y - m.half, m.half * 2, m.half * 2);
   }
 
   private drawText(e: TextEntity, view: CadView, color: string): void {

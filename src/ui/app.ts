@@ -24,6 +24,7 @@ import {
   type Entity,
   type NewEntity,
 } from '../core/entity.js';
+import { POINT_MODE_CHOICES, normalizeMode, pointModeLabel } from '../core/point-style.js';
 import { DEFAULT_DRAW_ATTRS, DrawTool, TOOL_KEYS, TOOL_LABEL, promptFor, type DrawAttrs, type ToolName } from './tools.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
 import {
@@ -273,6 +274,31 @@ export class CadApp {
     } catch (err) {
       this.setStatus(`.tc2 を書き出せませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /**
+   * 点の表示スタイル（形とサイズ）を決める。**図面全体に効く**（`PDMODE` / `PDSIZE`）。
+   * サイズ 0 は画面固定、正の値ならワールド寸法なのでズームに追従する。
+   */
+  editPointStyle(): void {
+    const choices = POINT_MODE_CHOICES.map((c) => `${c.mode}=${c.label}`).join(' / ');
+    const modeText = window.prompt(`点の形\n${choices}`, String(this.doc.pointStyle.mode));
+    if (modeText === null) return;
+    const sizeText = window.prompt('点の大きさ（mm。0 は画面固定でズームに追従しない）', String(this.doc.pointStyle.size));
+    if (sizeText === null) return;
+    const mode = Number(modeText);
+    const size = Number(sizeText);
+    if (!Number.isFinite(mode) || mode < 0 || !Number.isFinite(size) || size < 0) {
+      this.setStatus('形は 0 以上の整数、大きさは 0 以上の数値で入れてください');
+      return;
+    }
+    this.doc.pointStyle = { mode: normalizeMode(mode), size };
+    this.setStatus(
+      `点の表示: ${pointModeLabel(this.doc.pointStyle.mode)}・${
+        size > 0 ? `${size}mm（ズームに追従）` : '画面固定'
+      }`,
+    );
+    this.markDirty();
   }
 
   newDocument(): void {
@@ -631,6 +657,9 @@ export class CadApp {
           break;
         case 'print':
           this.openPrintDialog();
+          break;
+        case 'point-style':
+          this.editPointStyle();
           break;
         case 'undo':
           this.undo();
