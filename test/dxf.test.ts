@@ -11,8 +11,10 @@ import {
   unescapeMText,
 } from '../src/io/dxf.js';
 import { CadDocument } from '../src/core/document.js';
-import type { ArcEntity, CircleEntity, LineEntity, PolylineEntity, TextEntity } from '../src/core/entity.js';
+import type { ArcEntity, CircleEntity, Entity, LineEntity, PolylineEntity, TextEntity } from '../src/core/entity.js';
 import { VB_BLACK } from '../src/core/layer.js';
+import { vec } from '../src/core/geometry.js';
+import { documentToDxf } from '../src/io/dxf-write.js';
 
 /** DXF テキストを組み立てる。値は行ごとに (code, value) の対。 */
 function dxf(...sections: string[]): string {
@@ -402,5 +404,228 @@ describe('壊れた入力', () => {
   it('座標が欠けた LINE は原点として読む（行が落ちても止めない）', () => {
     const res = dxfToDocumentJson(dxf(HEADER, entities('0', 'LINE', '8', '0', '10', '4', '20', '8')));
     expect(res.json.entities[0]).toMatchObject({ kind: 'line', a: { x: 4, y: 8 }, b: { x: 0, y: 0 } });
+  });
+});
+
+/**
+ * 往復（読込→書出→再読込）で情報が落ちないことを機械的に確かめる。issue #3。
+ *
+ * **1 周目は正規化が入る**（矩形は DXF に無いので閉じた連続線になる）。
+ * そこで「**2 周目からは一字一句変わらない**」を軸に据える。落ちる属性があると
+ * 2 周目で必ずずれるので、正規化と欠落を混同せずに測れる。
+ *
+ * 座標の検証値は**二進小数として厳密な値**（4 / 8 / 0.25 / 1/64）を使う。丸めが
+ * 浮動小数誤差でぶれない。角度が絡む円弧だけ `toBeCloseTo`。
+ */
+describe('往復（読込→書出→再読込）', () => {
+  const TOL = 1e-9;
+
+  /** 図形の比較に使う属性だけを取り出す（id は往復で振り直されるので見ない）。 */
+  function shape(e: Entity): Record<string, unknown> {
+    const { id: _id, ...rest } = e;
+    return rest as Record<string, unknown>;
+  }
+
+  function writeRead(doc: CadDocument): CadDocument {
+    const back = new CadDocument();
+    back.loadJson(dxfToDocumentJson(documentToDxf(doc.toJson())).json);
+    return back;
+  }
+
+  /** 全図形種・全属性を 1 枚に載せた図面。 */
+  function sample(): CadDocument {
+    const doc = new CadDocument();
+    doc.lineTypeScale = 250;
+    doc.addAll([
+      { layer: '0', color: null, lineStyle: 'solid', lineWidth: 0, kind: 'line', a: vec(0, 0), b: vec(8, 4) },
+      {
+        layer: '境界',
+        color: '#0a58ca',
+        lineStyle: 'dashdot',
+        lineWidth: 0.5,
+        kind: 'circle',
+        center: vec(16, 32),
+        radius: 4,
+      },
+      {
+        layer: '0',
+        color: '#ff8000',
+        lineStyle: 'dashed',
+        lineWidth: 0.25,
+        kind: 'arc',
+        center: vec(-8, 0.25),
+        radius: 8,
+        startAngle: 0,
+        endAngle: Math.PI / 2,
+      },
+      {
+        layer: '点番',
+        color: null,
+        lineStyle: 'dotted',
+        lineWidth: 0.13,
+        kind: 'polyline',
+        points: [vec(0, 0), vec(8, 0), vec(8, 4)],
+        closed: true,
+      },
+      {
+        layer: '0',
+        color: null,
+        lineStyle: 'solid',
+        lineWidth: 0,
+        kind: 'polyline',
+        points: [vec(0, 64), vec(0.015625, 64)],
+        closed: false,
+      },
+      { layer: '点番', color: null, lineStyle: 'solid', lineWidth: 0, kind: 'point', at: vec(-4, 0.25) },
+      {
+        layer: '0',
+        color: '#00ff00',
+        lineStyle: 'solid',
+        lineWidth: 0,
+        kind: 'text',
+        at: vec(4, 8),
+        text: '境界点 A',
+        height: 2.5,
+        rotation: 0,
+        hAlign: 'center',
+        vAlign: 'middle',
+      },
+      { layer: '0', color: null, lineStyle: 'solid', lineWidth: 0, kind: 'rect', a: vec(0, 0), b: vec(8, 4) },
+    ]);
+    return doc;
+  }
+
+  it('図形数が保たれる（矩形も 1 図形として戻る）', () => {
+    const src = sample();
+    const back = writeRead(src);
+    expect(back.count).toBe(src.count);
+  });
+
+  it('座標が 1e-9 の許容で一致する', () => {
+    const back = writeRead(sample());
+    const line = back.entities[0] as LineEntity;
+    expect(line.a.x).toBeCloseTo(0, 9);
+    expect(line.b.x).toBeCloseTo(8, 9);
+    expect(line.b.y).toBeCloseTo(4, 9);
+
+    const circle = back.entities[1] as CircleEntity;
+    expect(Math.abs(circle.center.x - 16)).toBeLessThan(TOL);
+    expect(Math.abs(circle.center.y - 32)).toBeLessThan(TOL);
+    expect(Math.abs(circle.radius - 4)).toBeLessThan(TOL);
+
+    // 1/64 = 0.015625 は二進小数として厳密。桁を削られていたらここで出る
+    const short = back.entities[4] as PolylineEntity;
+    expect(short.points[1]!.x).toBe(0.015625);
+  });
+
+  it('円弧の角度は反時計回りのまま戻る', () => {
+    const arc = writeRead(sample()).entities[2] as ArcEntity;
+    expect(arc.startAngle).toBeCloseTo(0, 9);
+    expect(arc.endAngle).toBeCloseTo(Math.PI / 2, 9);
+    expect(Math.abs(arc.radius - 8)).toBeLessThan(TOL);
+  });
+
+  it('色・画層・線種・線幅がすべて一致する', () => {
+    const back = writeRead(sample());
+    expect(back.entities.map((e) => e.layer)).toEqual(['0', '境界', '0', '点番', '0', '点番', '0', '0']);
+    expect(back.entities.map((e) => e.color)).toEqual([
+      null,
+      '#0a58ca',
+      '#ff8000',
+      null,
+      null,
+      null,
+      '#00ff00',
+      null,
+    ]);
+    expect(back.entities.map((e) => e.lineStyle)).toEqual([
+      'solid',
+      'dashdot',
+      'dashed',
+      'dotted',
+      'solid',
+      'solid',
+      'solid',
+      'solid',
+    ]);
+    expect(back.entities.map((e) => e.lineWidth)).toEqual([0, 0.5, 0.25, 0.13, 0, 0, 0, 0]);
+  });
+
+  /**
+   * **DXF の線幅は列挙値しか許さない**（mm×100 で 0/5/9/13/15/18/…）。
+   * 列挙外の値を書くと他 CAD のリーダーに弾かれるので、最寄りへスナップする。
+   * **往復で値が変わる唯一の属性**なので、変わり方をここで固定しておく。
+   */
+  it('列挙にない線幅は最寄りの DXF 線幅へスナップされる', () => {
+    const doc = new CadDocument();
+    doc.addAll([
+      { layer: '0', color: null, lineStyle: 'solid', lineWidth: 0.125, kind: 'line', a: vec(0, 0), b: vec(4, 0) },
+      { layer: '0', color: null, lineStyle: 'solid', lineWidth: 0.44, kind: 'line', a: vec(0, 4), b: vec(4, 4) },
+    ]);
+    const back = writeRead(doc);
+    // 12.5 → 13、44 → 40（どちらも最寄りの列挙値）
+    expect(back.entities.map((e) => e.lineWidth)).toEqual([0.13, 0.4]);
+    // スナップ後は 2 周目で動かない
+    expect(writeRead(back).entities.map((e) => e.lineWidth)).toEqual([0.13, 0.4]);
+  });
+  it('lineTypeScale が保たれる', () => {
+    expect(writeRead(sample()).lineTypeScale).toBe(250);
+  });
+
+  it('連続線の閉合フラグが保たれる', () => {
+    const back = writeRead(sample());
+    expect((back.entities[3] as PolylineEntity).closed).toBe(true);
+    expect((back.entities[4] as PolylineEntity).closed).toBe(false);
+  });
+
+  it('文字の内容・高さ・揃えが保たれる', () => {
+    const t = writeRead(sample()).entities[6] as TextEntity;
+    expect(t).toMatchObject({ text: '境界点 A', height: 2.5, hAlign: 'center', vAlign: 'middle' });
+  });
+
+  it('矩形は閉じた連続線になる（DXF に矩形が無いため）', () => {
+    const r = writeRead(sample()).entities[7] as PolylineEntity;
+    expect(r.kind).toBe('polyline');
+    expect(r.closed).toBe(true);
+    expect(r.points).toEqual([vec(0, 0), vec(8, 0), vec(8, 4), vec(0, 4)]);
+  });
+
+  it('2 周目からは図形が一字一句変わらない', () => {
+    const first = writeRead(sample());
+    const second = writeRead(first);
+    expect(second.entities.map(shape)).toEqual(first.entities.map(shape));
+  });
+
+  it('3 周目でも変わらない（誤差が積み上がらない）', () => {
+    const first = writeRead(sample());
+    const third = writeRead(writeRead(first));
+    expect(third.entities.map(shape)).toEqual(first.entities.map(shape));
+  });
+
+  it('画層の色・線種・表示が保たれる', () => {
+    const src = sample();
+    const layer = src.layers.get('境界')!;
+    src.layers.set({ ...layer, visible: false });
+    const back = writeRead(src);
+    expect(back.layers.get('境界')).toMatchObject({ color: '#0000ff', lineStyle: 'dashdot', visible: false });
+    expect(back.layers.get('点番')?.color).toBe(src.layers.get('点番')?.color);
+  });
+
+  it('図面の範囲（bounds）が一致する', () => {
+    const src = sample();
+    const back = writeRead(src);
+    const a = src.bounds();
+    const b = back.bounds();
+    expect(Math.abs(a.minX - b.minX)).toBeLessThan(TOL);
+    expect(Math.abs(a.minY - b.minY)).toBeLessThan(TOL);
+    expect(Math.abs(a.maxX - b.maxX)).toBeLessThan(TOL);
+    expect(Math.abs(a.maxY - b.maxY)).toBeLessThan(TOL);
+  });
+
+  it('日本語の画層名・文字が化けない', () => {
+    const back = writeRead(sample());
+    expect(back.entities.some((e) => e.layer === '境界')).toBe(true);
+    expect(back.entities.some((e) => e.layer === '点番')).toBe(true);
+    expect((back.entities[6] as TextEntity).text).toBe('境界点 A');
   });
 });
