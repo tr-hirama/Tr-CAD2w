@@ -83,6 +83,48 @@ describe('calcLevel（器高式）', () => {
     expect(c.rows[2]).toMatchObject({ ih: 2.25 });
   });
 
+  /**
+   * **転換点（同じ行に前視と後視）**。issue #52。
+   *
+   * 到達した点をその場で読んで、そのまま器械を据え直す書き方（従来の TrCad2D 方式）。
+   * BM(GH=10) BS=1.5 → IH=11.5 / TP1 は TP=0.5 で GH=11、そこへ BS=1.25 で IH=12.25 /
+   * No.2 FS=0.25 → GH=12。
+   *
+   * **後視を先に見ると TP1 の GH が 0 になり**、IH=1.25、No.2 の GH=1 と全部ずれる。
+   */
+  it('同じ行に前視と後視があるとき、前視で地盤高を出してから器械を据え直す', () => {
+    const c = calcLevel([
+      r('BM', { bs: '1.5', gh: '10' }),
+      r('TP1', { bs: '1.25', tp: '0.5' }),
+      r('No.2', { fs: '0.25' }),
+    ]);
+    expect(c.rows[1]).toMatchObject({ name: 'TP1', gh: 11, bs: 1.25, fs: 0.5, ih: 12.25, kind: 'turning' });
+    expect(c.rows[2]).toMatchObject({ name: 'No.2', gh: 12 });
+    expect(c.fixed.get('TP1')).toBe(11);
+  });
+
+  /** `FS` 列に書く現場もある。TP と同じ結果になる。 */
+  it('転換点は FS 列でも同じに解ける', () => {
+    const c = calcLevel([r('BM', { bs: '1.5', gh: '10' }), r('TP1', { bs: '1.25', fs: '0.5' })]);
+    expect(c.rows[1]).toMatchObject({ gh: 11, ih: 12.25, kind: 'turning' });
+  });
+
+  /** 器械がまだ無ければ、後視が同じ行にあっても地盤高は出せない（デスクトップ版も GH 空）。 */
+  it('器械高より前の転換点は解決できない行として残す', () => {
+    const c = calcLevel([r('TP1', { bs: '1.25', tp: '0.5' })]);
+    expect(c.rows).toHaveLength(0);
+    expect(c.unresolved[0]!.reason).toContain('器械高');
+  });
+
+  /** 転換点の後視も合計に入る（帳票の B 列に出るため）。 */
+  it('転換点の後視と前視は両方とも合計に入る', () => {
+    const s = summarizeLevel(
+      calcLevel([r('BM', { bs: '1.5', gh: '10' }), r('TP1', { bs: '1.25', tp: '0.5' }), r('No.2', { fs: '0.25' })]),
+    );
+    expect(s.totalBs).toBe(2.75);
+    expect(s.totalFs).toBe(0.75);
+  });
+
   /** `TP` 列に入っていても前視として読む。見ないと「与点」に落ちて計算が狂う。 */
   it('TP 列の値を前視として読む', () => {
     const c = calcLevel([r('BM', { bs: '1.0' }), r('TP1', { tp: '0.4' })]);

@@ -56,6 +56,12 @@ export function levelSheet(rows: readonly LevelRow[]): Sheet {
       // 器械高 = 地盤高 + 後視
       ih = formula(`E${excelRow}+B${excelRow}`);
       instrumentRow = excelRow;
+    } else if (r.kind === 'turning' && instrumentRow !== null) {
+      // 転換点（issue #52）。**前視で地盤高を出してから**、その上に器械を据え直す。
+      // 1 行で 2 つの数式が要る（D と E が同じ行で互いを見ない形になっている）
+      gh = formula(`D${instrumentRow}-C${excelRow}`);
+      ih = formula(`E${excelRow}+B${excelRow}`);
+      instrumentRow = excelRow;
     } else if (r.fs !== null && instrumentRow !== null) {
       // 地盤高 = 直前の器械高 − 前視
       gh = formula(`D${instrumentRow}-C${excelRow}`);

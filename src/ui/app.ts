@@ -1578,7 +1578,8 @@ export class CadApp {
     t.append(head);
     for (const row of calc.rows) {
       const tr = document.createElement('tr');
-      if (row.kind === 'instrument') tr.className = 'instrument';
+      // 転換点も器械を据え直す行なので、据付と同じ強調にする
+      if (row.kind === 'instrument' || row.kind === 'turning') tr.className = 'instrument';
       const cells = [row.name, fmt(row.bs), fmt(row.fs), fmt(row.gh)];
       for (const v of cells) {
         const td = document.createElement('td');
