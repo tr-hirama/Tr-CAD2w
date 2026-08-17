@@ -44,6 +44,48 @@ describe('effectiveColor', () => {
     const e = ent({ layer: '境界', color: '#00ff00' });
     expect(effectiveColor(e, { layers, background: '#ffffff', darkBoost: 0 })).toBe('#00ff00');
   });
+
+  /**
+   * issue #55。`.tc2` のペイントは真っ黒（`#000000`）を図形の色として持っている。
+   * 明背景で反転すると白になって消えるので、**衝突しない側は入れ替えない**。
+   */
+  it('明背景では黒はそのまま黒（.tc2 のペイントが消えない）', () => {
+    const e = ent({ layer: 'ペイント', color: '#000000' });
+    expect(effectiveColor(e, { layers, background: '#ffffff', darkBoost: 0 })).toBe('#000000');
+  });
+
+  it('暗背景では黒を白にする', () => {
+    const e = ent({ layer: 'ペイント', color: '#000000' });
+    expect(effectiveColor(e, { layers, background: '#1e1e1e', darkBoost: 0 })).toBe(VB_BLACK);
+  });
+
+  it('デスクトップ版の既定色 #e6e6e6 は明背景で黒になる', () => {
+    const e = ent({ layer: '0', color: '#e6e6e6' });
+    expect(effectiveColor(e, { layers, background: '#ffffff', darkBoost: 0 })).toBe('#000000');
+  });
+
+  /** 中間グレーは色 7 ではない（デスクトップ版 `IsMono` と同じ扱い）。 */
+  it('中間グレーは図面の色として尊重する', () => {
+    const e = ent({ layer: '0', color: '#808080' });
+    expect(effectiveColor(e, { layers, background: '#ffffff', darkBoost: 0 })).toBe('#808080');
+    expect(effectiveColor(e, { layers, background: '#1e1e1e', darkBoost: 0 })).toBe('#808080');
+  });
+
+  /** 境界値もデスクトップ版に合わせる（`max - min > 16` は有彩色、`min <= 0x20` はほぼ黒）。 */
+  it('無彩色の許容幅を超えたら有彩色として扱う', () => {
+    // #e6e6d0 は max-min=22 で有彩色 → 明背景でも黒くしない
+    expect(
+      effectiveColor(ent({ layer: '0', color: '#e6e6d0' }), {
+        layers,
+        background: '#ffffff',
+        darkBoost: 0,
+      }),
+    ).toBe('#e6e6d0');
+    // #0a0a12 は max-min=8 でほぼ黒 → 明背景ではそのまま／暗背景では白
+    const dark = ent({ layer: '0', color: '#0a0a12' });
+    expect(effectiveColor(dark, { layers, background: '#ffffff', darkBoost: 0 })).toBe('#0a0a12');
+    expect(effectiveColor(dark, { layers, background: '#1e1e1e', darkBoost: 0 })).toBe(VB_BLACK);
+  });
 });
 
 describe('effectiveLineStyle', () => {
