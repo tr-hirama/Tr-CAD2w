@@ -1,24 +1,23 @@
+/*
+ * 配色と体裁は Tr-viewer（DXF / TRC ビューワー）に合わせている（issue #58）。
+ * 出どころは `C:\claude\Tr-viewer\index.html` の <style>。
+ * 明暗の追従はやめて**ダーク固定**にした（Tr-viewer が同じ 1 トーンだから）。
+ * 図面の背景は CSS ではなく描画側（`Renderer`／「背景」ボタン）が決める。
+ */
 :root {
-  --bg: #f3f3f3;
-  --panel: #ffffff;
-  --border: #d0d0d0;
-  --text: #1b1b1b;
-  --accent: #0a58ca;
-  --accent-weak: #e7f0ff;
-  --status: #0a58ca;
-  color-scheme: light dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #202124;
-    --panel: #2a2b2e;
-    --border: #3c3d40;
-    --text: #eaeaea;
-    --accent: #6ea8fe;
-    --accent-weak: #24354d;
-    --status: #24354d;
-  }
+  --bg: #1e1e1e;
+  --panel: #2d2d30;
+  --panel-sub: #252526;
+  --border: #3f3f46;
+  --text: #dddddd;
+  --text-weak: #9a9a9a;
+  --accent: #0e639c;
+  --accent-weak: #3f3f46;
+  --head: #9cdcfe;
+  --status: #252526;
+  --grid-line: #3a3a3a;
+  --th-bg: #333337;
+  color-scheme: dark;
 }
 
 * {
@@ -30,7 +29,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  font-family: "Yu Gothic UI", "Noto Sans JP", system-ui, sans-serif;
+  font-family: "Segoe UI", "Meiryo", "Yu Gothic UI", "Noto Sans JP", sans-serif;
   font-size: 13px;
   color: var(--text);
   background: var(--bg);
@@ -59,30 +58,28 @@ body {
   overflow-x: auto;
 }
 
+/* Tr-viewer のデータタブ（`#panel .tab`）と同じ体裁 */
 #layout-tabs .tab {
-  padding: 3px 12px;
+  padding: 4px 12px;
+  font-family: inherit;
   font-size: 12px;
+  color: #cfcfcf;
+  background: var(--th-bg);
   border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
-  background: transparent;
-  color: inherit;
+  border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
 }
 
 #layout-tabs .tab:hover {
-  background: var(--hover, rgba(127, 127, 127, 0.15));
+  color: #ffffff;
+  background: var(--border);
 }
 
 #layout-tabs .tab.active {
-  background: var(--bg);
-  font-weight: 600;
-}
-
-#layout-tabs .tab.add {
-  border-radius: 4px;
-  border-bottom: 1px solid var(--border);
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 #toolbar {
@@ -107,24 +104,32 @@ body {
 
 #toolbar button {
   min-width: 34px;
-  padding: 5px 9px;
-  font: inherit;
-  color: var(--text);
-  background: transparent;
-  border: 1px solid transparent;
+  padding: 5px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  color: #cfcfcf;
+  background: var(--th-bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 #toolbar button:hover {
-  background: var(--accent-weak);
+  color: #ffffff;
+  background: var(--border);
 }
 
 #toolbar button.active {
-  color: var(--accent);
-  background: var(--accent-weak);
+  color: #ffffff;
+  background: var(--accent);
   border-color: var(--accent);
-  font-weight: 700;
+}
+
+/* 出せないボタンは場所も取らない（issue #58）。`hidden` 属性で切り替える */
+#toolbar button[hidden],
+#toolbar .group[hidden] {
+  display: none;
 }
 
 #canvas-host {
@@ -141,18 +146,25 @@ body {
 
 #sidebar {
   grid-area: sidebar;
-  padding: 8px;
+  padding: 10px 12px;
   overflow-y: auto;
-  background: var(--panel);
+  background: var(--panel-sub);
   border-left: 1px solid var(--border);
+  font-size: 12px;
 }
 
+/* Tr-viewer の `#panel h2`（水色の見出し＋下線） */
 #sidebar h2 {
-  margin: 10px 0 6px;
+  margin: 14px 0 6px;
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  opacity: 0.7;
+  font-weight: 600;
+  color: var(--head);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+}
+
+#sidebar h2:first-child {
+  margin-top: 0;
 }
 
 .layer-row {
@@ -176,40 +188,49 @@ body {
 }
 
 .layer-row .layer-use {
-  padding: 1px 5px;
-  font: inherit;
+  padding: 1px 6px;
+  font-family: inherit;
   font-size: 11px;
-  color: var(--text);
-  background: transparent;
+  color: #cfcfcf;
+  background: var(--th-bg);
   border: 1px solid var(--border);
   border-radius: 3px;
   cursor: pointer;
 }
 
 .layer-row .layer-use:hover {
-  background: var(--accent-weak);
+  color: #ffffff;
+  background: var(--border);
 }
 
+/* 操作の説明は Tr-viewer の HUD と同じ控えめなグレーで小さく */
 .help {
   margin: 0;
-  padding-left: 18px;
-  line-height: 1.6;
-  opacity: 0.8;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #888888;
 }
 
+/* Tr-viewer のヘッダー右 `#info`／HUD と同じ、控えめなグレー */
 #statusbar {
   grid-area: status;
   display: flex;
   gap: 16px;
   justify-content: space-between;
-  padding: 4px 10px;
-  color: #ffffff;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-weak);
   background: var(--status);
+  border-top: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
 }
 
+#statusbar #status {
+  color: var(--text);
+}
+
 #statusbar #info {
-  opacity: 0.9;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -258,23 +279,25 @@ body {
 
 .print-dialog button {
   padding: 5px 12px;
-  font: inherit;
-  color: var(--text);
-  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: #cfcfcf;
+  background: var(--th-bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
 }
 
 .print-dialog button:hover {
-  background: var(--accent-weak);
+  color: #ffffff;
+  background: var(--border);
 }
 
 .print-dialog button.primary {
-  color: #fff;
+  color: #ffffff;
   background: var(--accent);
   border-color: var(--accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .print-dialog footer .spacer {
@@ -330,18 +353,10 @@ body {
   padding: 6px 8px;
   font-size: 11px;
   line-height: 1.5;
-  color: #8a3a00;
-  background: #fff4e5;
-  border: 1px solid #f0c48a;
+  color: #ffd866;
+  background: #4a3c10;
+  border: 1px solid #6b4a1d;
   border-radius: 3px;
-}
-
-@media (prefers-color-scheme: dark) {
-  .print-note {
-    color: #ffd9a8;
-    background: #3a2a13;
-    border-color: #6b4a1d;
-  }
 }
 
 .print-hint {
@@ -428,31 +443,32 @@ body {
   border-collapse: collapse;
   font-size: 11px;
 }
+/* Tr-viewer の表と同じ体裁（罫線・見出しの背景・数値は右揃えで桁を揃える） */
 #ken-panel .ken-table th,
-#level-panel .level-table th {
-  text-align: left;
-  font-weight: 600;
-  opacity: 0.7;
-  padding: 1px 4px 1px 0;
-}
+#level-panel .level-table th,
 #ken-panel .ken-table td,
 #level-panel .level-table td {
-  padding: 1px 4px 1px 0;
-  white-space: nowrap;
-}
-/* まわりけん: 3 列目（計算値）は右揃えにして桁を比べやすくする */
-#ken-panel .ken-table td:nth-child(3),
-#ken-panel .ken-table th:nth-child(3) {
+  border: 1px solid var(--grid-line);
+  padding: 2px 5px;
   text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+#ken-panel .ken-table th,
+#level-panel .level-table th {
+  color: #cccccc;
+  background: var(--th-bg);
+  text-align: center;
+  font-weight: 600;
+}
+/* 1 列目は名前（境界名・点名）なので左揃え */
+#ken-panel .ken-table td:first-child,
+#level-panel .level-table td:first-child {
+  text-align: left;
 }
 /* 測れない辺は薄く見せる（対象外だと分かるように） */
 #ken-panel .ken-table tr.unable td {
   opacity: 0.5;
-}
-/* レベル: 数値の列は右揃えにして桁を比べやすくする */
-#level-panel .level-table td:not(:first-child),
-#level-panel .level-table th:not(:first-child) {
-  text-align: right;
 }
 /* 器械を据えた行（後視のある行）は区切りとして目立たせる */
 #level-panel .level-table tr.instrument td {
@@ -467,20 +483,24 @@ body {
   line-height: 1.4;
 }
 
-/* まわりけんの誤差（デスクトップ版の 水色 / 金 / 赤 に対応） */
+/*
+ * まわりけんの誤差（デスクトップ版の 水色 / 金 / 赤 に対応）。
+ * 暗い背景で読めるよう、Tr-viewer が同じ 3 段階に使っている明るい方の色にした
+ * （`mk-ok` #9fd6ff / `mk-warn` #ffd866 / `mk-ng` #ffb3b3）。意味は変えていない。
+ */
 #ken-panel .gosa-ok {
-  color: #2980b9;
+  color: #9fd6ff;
 }
 #ken-panel .gosa-warn {
-  color: #b8860b;
+  color: #ffd866;
   font-weight: 600;
 }
 #ken-panel .gosa-ng {
-  color: #c0392b;
+  color: #ffb3b3;
   font-weight: 600;
 }
 #ken-panel .ken-note.warn,
 #level-panel .level-note.warn {
   opacity: 1;
-  color: #c0392b;
+  color: #ffb3b3;
 }
