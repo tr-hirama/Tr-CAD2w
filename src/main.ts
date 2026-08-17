@@ -14,6 +14,8 @@ const app = new CadApp(required<HTMLCanvasElement>('canvas'), {
   info: required('info'),
   layerList: required('layer-list'),
   layoutTabs: required('layout-tabs'),
+  kenPanel: required('ken-panel'),
+  kenList: required('ken-list'),
   levelPanel: required('level-panel'),
   levelList: required('level-list'),
 });

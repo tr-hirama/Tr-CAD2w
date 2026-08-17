@@ -56,6 +56,7 @@ import type { Layer } from '../core/layer.js';
 import { STANDARD_LAYERS, VB_BLACK, formatColor, makeLayer, parseColor } from '../core/layer.js';
 import { looksLikeZip, unzip, zip } from './zip.js';
 import { DEFAULT_POINT_STYLE, normalizeMode } from '../core/point-style.js';
+import { isKenTableEmpty, normalizeKenTable, type KenTable } from '../survey/ken.js';
 import { cloneStrokes, normalizeStrokes } from '../core/ink.js';
 import { normalizeLevelRows, type LevelRow } from '../survey/level.js';
 import {
@@ -126,6 +127,15 @@ export interface Tc2CommentDto {
   Text?: string | null;
 }
 
+/** まわりけん（デスクトップ版 `SurveyKenDto(Name, Measured, CalcDist, Unable)`）。 */
+export interface Tc2KenDto {
+  Name?: string | null;
+  /** 実測値。**デスクトップ版が文字列で持つ**ので文字列のまま扱う。 */
+  Measured?: string | null;
+  CalcDist?: number;
+  Unable?: boolean;
+}
+
 /**
  * レベル（水準）（デスクトップ版 `SurveyLevelDto(Name, BS, FS, GH, Remarks, TP, CK)`）。
  * **すべて文字列**。空欄・非数値・`[点番]` 参照が混ざるので、解釈は `survey/level.ts` が持つ。
@@ -159,6 +169,10 @@ export interface Tc2DocDto {
   Project?: Tc2ProjectDto | null;
   Comments?: Tc2CommentDto[] | null;
   Kyokai?: Tc2KyokaiDto[] | null;
+  /** まわりけん（0 件のときデスクトップ版は出さない）。 */
+  Ken?: Tc2KenDto[] | null;
+  /** 計算点あり（デスクトップ版 `Keisanten`。常に出る）。 */
+  Keisanten?: boolean;
   /** レベル（水準）（0 件のときデスクトップ版は出さない）。 */
   Level?: Tc2LevelDto[] | null;
   MemoText?: string | null;
@@ -309,12 +323,11 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   }
 
   // 図形以外で落ちるもの（利用者に伝えるため名前だけ拾う）。
-  // **概要・コメント・境界コメント・メモ・レベルは取り込むのでここには挙げない**
+  // **概要・コメント・境界コメント・メモ・まわりけん・レベルは取り込むのでここには挙げない**
   const droppedSections: string[] = [];
   const SECTION_LABEL: Record<string, string> = {
     Obs: '観測データ',
     Coord: '座標',
-    Ken: 'まわりけん',
     Transform: '座標変換',
     Blocks: 'ブロック定義',
     Layouts: '用紙空間',
@@ -357,6 +370,8 @@ export function tc2JsonToDocument(dto: Tc2DocDto): Tc2ReadResult {
   if (blocks.length > 0) json.blocks = blocks;
   const info = tc2InfoToDocument(dto);
   if (!isDocumentInfoEmpty(info)) json.info = info;
+  const ken = tc2KenToDocument(dto);
+  if (!isKenTableEmpty(ken)) json.ken = ken;
   const level = tc2LevelToDocument(dto);
   if (level.length > 0) json.level = level;
   return { json, skipped, droppedSections };
@@ -382,6 +397,19 @@ export function tc2InfoToDocument(dto: Tc2DocDto): DocumentInfo {
   // ISF（MemoInk）は読まない（案 B）。点列だけを受ける
   info.memoStrokes = normalizeStrokes(dto.MemoStrokes);
   return info;
+}
+
+/** `.tc2` のまわりけん → Web 版の表。**値は解釈せずそのまま持つ**（表示だけのため）。 */
+export function tc2KenToDocument(dto: Tc2DocDto): KenTable {
+  const rows = (dto.Ken ?? [])
+    .filter((k): k is Tc2KenDto => k !== null && k !== undefined)
+    .map((k) => ({
+      name: k.Name ?? '',
+      measured: k.Measured ?? '',
+      calcDist: Number.isFinite(k.CalcDist) ? Number(k.CalcDist) : 0,
+      unable: k.Unable === true,
+    }));
+  return { rows, keisanten: dto.Keisanten === true };
 }
 
 /** `.tc2` のレベル → Web 版の行。**文字列のまま持つ**（解釈は `survey/level.ts`）。 */
@@ -583,6 +611,20 @@ export function documentToTc2Json(json: DocumentJson): Tc2DocDto {
       TP: r.tp,
       CK: r.ck,
     }));
+  }
+
+  const ken = normalizeKenTable(json.ken);
+  // 0 件のときデスクトップ版は Ken を出さない。合わせる
+  if (ken.rows.length > 0) {
+    out.Ken = ken.rows.map((r) => ({
+      Name: r.name,
+      Measured: r.measured,
+      CalcDist: r.calcDist,
+      Unable: r.unable,
+    }));
+  }
+  if (ken.keisanten) {
+    out.Keisanten = true;
   }
   return out;
 }

@@ -72,6 +72,7 @@ import {
   type ToolName,
 } from './tools.js';
 import { ErrorGuard } from './error-guard.js';
+import { confirmGosa, incompleteCount, summarize as summarizeKen } from '../survey/ken.js';
 import { InkPad } from './ink-pad.js';
 import { calcLevel, summarizeLevel } from '../survey/level.js';
 import { LINE_STYLE_LABEL } from '../render/linetype.js';
@@ -136,6 +137,9 @@ export class CadApp {
       layerList: HTMLElement;
       /** 空間（モデル / レイアウト）の切替タブ。 */
       layoutTabs: HTMLElement;
+      /** まわりけんの枠（無い図面では隠す）。 */
+      kenPanel: HTMLElement;
+      kenList: HTMLElement;
       /** レベル（水準）の枠（無い図面では隠す）。 */
       levelPanel: HTMLElement;
       levelList: HTMLElement;
@@ -150,6 +154,7 @@ export class CadApp {
     this.bindToolbar();
     this.bindDragAndDrop();
     this.buildLayerList();
+    this.buildKenList();
     this.buildLevelList();
     this.buildLayoutTabs();
 
@@ -348,6 +353,7 @@ export class CadApp {
         this.setStatus(`${picked.name} を開きました（${this.doc.count} 図形）`);
       }
       this.buildLayerList();
+      this.buildKenList();
       this.buildLevelList();
       this.zoomFit();
     } catch (err) {
@@ -1551,6 +1557,76 @@ export class CadApp {
   }
 
   /**
+   * まわりけんの一覧（**表示だけ**。issue #28 の「入力・照合は行わない」）。
+   *
+   * `.tc2` から読んだ値をそのまま並べる。**周長は境界が連番で揃っているときだけ**
+   * 出し、欠番があれば理由を添えて出さない（欠けた辺のぶん短い値が出て、
+   * 正しく見えてしまうため）。まわりけんが無い図面では枠ごと隠す。
+   */
+  private buildKenList(): void {
+    const panel = this.ui.kenPanel;
+    const host = this.ui.kenList;
+    if (!panel || !host) return;
+    const table = this.doc.ken;
+    panel.hidden = table.rows.length === 0 && !table.keisanten;
+    if (panel.hidden) return;
+
+    host.textContent = '';
+    if (table.keisanten) {
+      const note = document.createElement('p');
+      note.className = 'ken-note';
+      note.textContent = '計算点あり（デスクトップ版では実測入力を使いません）';
+      host.append(note);
+    }
+
+    if (table.rows.length > 0) {
+      const t = document.createElement('table');
+      t.className = 'ken-table';
+      const head = document.createElement('tr');
+      for (const label of ['境界', '実測', '計算', '誤差']) {
+        const th = document.createElement('th');
+        th.textContent = label;
+        head.append(th);
+      }
+      t.append(head);
+      for (const r of table.rows) {
+        const tr = document.createElement('tr');
+        if (r.unable) tr.className = 'unable';
+        const name = document.createElement('td');
+        name.textContent = r.unable ? `${r.name}（不可）` : r.name;
+        const measured = document.createElement('td');
+        measured.textContent = r.measured;
+        const calc = document.createElement('td');
+        calc.textContent = formatMm(r.calcDist);
+        // 誤差の色分け（デスクトップ版と同じ 20mm / 50mm のしきい値）
+        const g = confirmGosa(r);
+        const gosa = document.createElement('td');
+        gosa.textContent = g.text;
+        gosa.className = `gosa-${g.level}`;
+        tr.append(name, measured, calc, gosa);
+        t.append(tr);
+      }
+      host.append(t);
+    }
+
+    const s = summarizeKen(table);
+    const sum = document.createElement('p');
+    sum.className = 'ken-note';
+    sum.textContent =
+      s.perimeter === null ? s.reason : `周長 ${formatMm(s.perimeter)}m（${s.count} 辺・不可 ${s.unableCount}）`;
+    host.append(sum);
+
+    // 入れ直しが要る辺があれば件数を出す（黙って通すと未入力のまま先へ進んでしまう）
+    const todo = incompleteCount(table.rows);
+    if (todo > 0) {
+      const warn = document.createElement('p');
+      warn.className = 'ken-note warn';
+      warn.textContent = `まわりけんの入れ直しが要る辺: ${todo} 件（誤差 50mm 超・未入力・非数値）`;
+      host.append(warn);
+    }
+  }
+
+  /**
    * レベル（水準）の一覧（**表示だけ**。issue #29 の 1/3）。
    *
    * `.tc2` から読んだ入力を器高式で解いて、測点・後視・前視・地盤高を並べる。
@@ -1823,6 +1899,12 @@ export function base64OfBytes(bytes: Uint8Array): string {
 /** 縮尺の分母の表示（`1:200` / `1:2.5`）。整数はそのまま、端数だけ小数で見せる。 */
 export function formatDenominator(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+/** まわりけんの長さ表示（m）。整数はそのまま、端数は 3 桁まで。 */
+function formatMm(v: number): string {
+  if (!Number.isFinite(v)) return '—';
+  return Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 /**

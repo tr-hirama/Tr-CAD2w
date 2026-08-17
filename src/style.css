@@ -421,23 +421,35 @@ body {
   background: var(--bg);
 }
 
-/* レベル（水準）。表示だけ。issue #29 */
+/* まわりけん（#28）とレベル（#29）。どちらも表示だけの表なので体裁を揃える */
+#ken-panel .ken-table,
 #level-panel .level-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
 }
+#ken-panel .ken-table th,
 #level-panel .level-table th {
   text-align: left;
   font-weight: 600;
   opacity: 0.7;
   padding: 1px 4px 1px 0;
 }
+#ken-panel .ken-table td,
 #level-panel .level-table td {
   padding: 1px 4px 1px 0;
   white-space: nowrap;
 }
-/* 数値の列は右揃えにして桁を比べやすくする */
+/* まわりけん: 3 列目（計算値）は右揃えにして桁を比べやすくする */
+#ken-panel .ken-table td:nth-child(3),
+#ken-panel .ken-table th:nth-child(3) {
+  text-align: right;
+}
+/* 測れない辺は薄く見せる（対象外だと分かるように） */
+#ken-panel .ken-table tr.unable td {
+  opacity: 0.5;
+}
+/* レベル: 数値の列は右揃えにして桁を比べやすくする */
 #level-panel .level-table td:not(:first-child),
 #level-panel .level-table th:not(:first-child) {
   text-align: right;
@@ -447,12 +459,27 @@ body {
   border-top: 1px solid var(--border);
   font-weight: 600;
 }
+#ken-panel .ken-note,
 #level-panel .level-note {
   margin: 4px 0 0;
   font-size: 11px;
   opacity: 0.75;
   line-height: 1.4;
 }
+
+/* まわりけんの誤差（デスクトップ版の 水色 / 金 / 赤 に対応） */
+#ken-panel .gosa-ok {
+  color: #2980b9;
+}
+#ken-panel .gosa-warn {
+  color: #b8860b;
+  font-weight: 600;
+}
+#ken-panel .gosa-ng {
+  color: #c0392b;
+  font-weight: 600;
+}
+#ken-panel .ken-note.warn,
 #level-panel .level-note.warn {
   opacity: 1;
   color: #c0392b;
