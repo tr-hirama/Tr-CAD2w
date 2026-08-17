@@ -72,6 +72,7 @@ import {
   type ToolName,
 } from './tools.js';
 import { ErrorGuard } from './error-guard.js';
+import { isButtonUsable, type ToolbarContext } from './toolbar.js';
 import { confirmGosa, incompleteCount, summarize as summarizeKen } from '../survey/ken.js';
 import { InkPad } from './ink-pad.js';
 import { calcLevel, summarizeLevel } from '../survey/level.js';
@@ -1548,12 +1549,70 @@ export class CadApp {
   }
 
   private updateToolbar(): void {
+    const ctx = this.toolbarContext();
     for (const btn of this.ui.toolbar.querySelectorAll('button')) {
       const tool = btn.dataset['tool'];
       if (tool) btn.classList.toggle('active', tool === this.tool.name);
       if (btn.dataset['cmd'] === 'osnap') btn.classList.toggle('active', this.snapSettings.objectSnap);
       if (btn.dataset['cmd'] === 'gsnap') btn.classList.toggle('active', this.snapSettings.gridSnap);
+      // 押しても断られるボタンは出さない（issue #58）
+      const key = tool ? `tool:${tool}` : `cmd:${btn.dataset['cmd'] ?? ''}`;
+      btn.hidden = !isButtonUsable(key, ctx);
     }
+    // ボタンが 1 つも出ていないグループは区切り線だけが残るので枠ごと隠す
+    for (const group of this.ui.toolbar.querySelectorAll<HTMLElement>('.group')) {
+      group.hidden = [...group.querySelectorAll('button')].every((b) => b.hidden);
+    }
+  }
+
+  /**
+   * ツールバーの表示条件に使う、そのときの状態を集める。
+   *
+   * ドラッグ中は毎フレーム呼ばれるので、**選択が空なら図形を走査しない**
+   * （`selectedEntities` は空間の図形を全部見る）。
+   */
+  private toolbarContext(): ToolbarContext {
+    const hasSelection = this.doc.selection.size > 0;
+    const selected = hasSelection ? this.doc.selectedEntities() : [];
+    return {
+      tool: this.tool.name,
+      inLayout: this.layoutIndex !== null,
+      canUndo: this.doc.canUndo,
+      canRedo: this.doc.canRedo,
+      hasSelection,
+      hasSelectedDim: selected.some((e) => e.kind === 'dim'),
+      hasSelectedViewport: hasSelection && this.selectedViewport() !== null,
+      hasBlocks: this.doc.blocks.length > 0,
+      hasLevel: this.doc.level.length > 0,
+      hasCheckedComment: this.doc.info.comments.some((c) => c.checked),
+    };
+  }
+
+  /**
+   * ツールバーの出し入れを描画に追従させる。
+   *
+   * 選択・履歴・空間の切替は経路が多いので、**状態をキーにして変わったときだけ**
+   * DOM を触る（毎フレーム 47 個のボタンを走査しない）。
+   */
+  private toolbarKey = '';
+
+  private syncToolbarIfChanged(): void {
+    const c = this.toolbarContext();
+    const key = [
+      c.tool,
+      c.inLayout,
+      c.canUndo,
+      c.canRedo,
+      c.hasSelection,
+      c.hasSelectedDim,
+      c.hasSelectedViewport,
+      c.hasBlocks,
+      c.hasLevel,
+      c.hasCheckedComment,
+    ].join('|');
+    if (key === this.toolbarKey) return;
+    this.toolbarKey = key;
+    this.updateToolbar();
   }
 
   /**
@@ -1773,6 +1832,8 @@ export class CadApp {
 
   private drawNow(): void {
     this.dirty = false;
+    // 選択・履歴・空間の切替はどれも描画要求を伴うので、ここに置けば全部の経路を拾える
+    this.syncToolbarIfChanged();
     const preview = [...this.tool.preview(), ...this.movePreview()];
     const pointerDragging = this.pointer?.dragged === true && this.pointer.button === 0;
     const selectionBox =
