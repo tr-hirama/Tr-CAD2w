@@ -19,13 +19,32 @@
  *
  * | 条件 | 意味 | GH |
  * |---|---|---|
- * | `BS` が数値 | 既知点／器械設置 | 確定済み → 入力 `GH` → 0 の順。**器械高を更新** |
+ * | `BS` が数値・**前視が無い** | 既知点／器械設置 | 確定済み → 入力 `GH` → 0 の順。**器械高を更新** |
  * | `BS` が `[点番]`・`FS` が数値 | 参照点からの派生 | 参照点の GH + FS |
  * | `FS` が数値 | ふつうの前視 | 器械高 − FS |
+ * | `FS` と `BS` が同じ行 | **転換点**（到達してすぐ据え直す） | 器械高 − FS。**そのあと器械高を更新** |
  * | `GH` が数値 | 与点（BS も FS も無い） | 入力 `GH` |
  *
  * **`TP`（転換点の前視）は `FS` と同じ扱い。** `FS` が空で `TP` に数値があれば
  * `TP` を前視として読む。これを見ないと転換点の行が「与点」に落ちて計算が狂う。
+ *
+ * ## 前視が先、据え直しが後（issue #52）
+ *
+ * **同じ行に前視と後視が並ぶ書き方**（従来の TrCad2D 方式。到達した点をその場で
+ * 読んで、そのまま器械を据え直す）では、**必ず前視で地盤高を出してから**後視で
+ * 器械を据え直す。順番を逆にすると、まだ決まっていない地盤高を 0 とみなして
+ * 器械高を作ってしまい、**その行以降の地盤高が全部ずれる**。
+ *
+ * デスクトップ版 `SurveyInput.cs` の `Recalc` も同じ順序で、
+ *
+ * ```csharp
+ * else if (hasFs && haveBase) { gh = baseBS - fs + baseGH; done = true; }
+ * else if (hasTp && haveBase) { gh = baseBS - tp + baseGH; done = true; }
+ * // …GH が出てから…
+ * if (hasBs && (hasFs || hasTp)) { baseBS = bs; baseGH = gh; haveBase = true; }
+ * ```
+ *
+ * と、据え直しを**後**に置いている（`baseBS + baseGH` がこちらの器械高 `ih`）。
  *
  * **確定 GH は初回のみ**（`first-write-wins`）。既知点へ点検の前視を打っても
  * GH を上書きしない。上書きすると点検の誤差が器械高へ伝播して以降が全部ずれる。
@@ -103,8 +122,13 @@ export interface LevelResult {
   bs: number | null;
   /** 前視として使った値（帳票の C 列）。 */
   fs: number | null;
-  /** どの規則で解決したか。 */
-  kind: 'instrument' | 'reference' | 'foresight' | 'given';
+  /**
+   * どの規則で解決したか。
+   *
+   * `turning` は**転換点**（同じ行に前視と後視があり、前視で地盤高を出してから
+   * 器械を据え直した行）。`bs` と `fs` の両方に値が入り、`ih` も更新される。
+   */
+  kind: 'instrument' | 'reference' | 'foresight' | 'turning' | 'given';
   /** 元の行の位置（表と突き合わせるため）。 */
   index: number;
 }
@@ -145,8 +169,8 @@ export function calcLevel(rows: readonly LevelRow[]): LevelCalc {
     let kind: LevelResult['kind'] = 'given';
     let ihHere: number | null = null;
 
-    if (bsNum !== null) {
-      // 既知点／器械設置。確定済みの GH があればそれを使う（点検の誤差を伝播させない）
+    if (bsNum !== null && fsNum === null) {
+      // 後視だけの行＝既知点／器械設置。確定済みの GH があればそれを使う（点検の誤差を伝播させない）
       gh = fixed.get(name) ?? ghNum ?? 0;
       ih = bsNum + gh;
       ihHere = ih;
@@ -166,9 +190,18 @@ export function calcLevel(rows: readonly LevelRow[]): LevelCalc {
         unresolved.push({ index, name, reason: '器械高が決まっていません（先に後視のある行が要ります）' });
         return;
       }
+      // **先に前視で地盤高を出す。** 後視が同じ行にあっても、据え直しはこの後（issue #52）
       gh = ih - fsNum;
       fs = fsNum;
-      kind = 'foresight';
+      if (bsNum !== null) {
+        // 転換点。いま出した地盤高の上に器械を据え直す
+        ih = bsNum + gh;
+        ihHere = ih;
+        bs = bsNum;
+        kind = 'turning';
+      } else {
+        kind = 'foresight';
+      }
     } else if (ghNum !== null) {
       gh = ghNum;
       fs = ghNum;
