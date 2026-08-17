@@ -115,11 +115,41 @@ export interface ColorContext {
   darkBoost: number;
 }
 
+/** 明背景で色 7 を描く色（デスクトップ版 `EffColor` と同じ真っ黒）。 */
+const MONO_ON_LIGHT_BG = '#000000';
+
+/**
+ * 「AutoCAD の色 7（白／黒）」として背景で入れ替える対象かどうか。
+ *
+ * デスクトップ版 `Renderer.cs` の `IsMono` をそのまま写した（境界値も同じ）。
+ * **中間グレーと有彩色は図面の色として尊重する**ので対象外にする。
+ */
+function monoKind(rgb: Rgb): 'light' | 'dark' | null {
+  const max = Math.max(rgb.r, rgb.g, rgb.b);
+  const min = Math.min(rgb.r, rgb.g, rgb.b);
+  if (max - min > 16) return null; // 有彩色
+  if (max >= 0xe0) return 'light'; // ほぼ白（デスクトップ版の既定色 #e6e6e6 を含む）
+  return min <= 0x20 ? 'dark' : null; // ほぼ黒。中間グレー（#808080 など）は対象外
+}
+
 /**
  * 図形の実効色。**描画側はこれを必ず通す。**
  *
- * - 無彩色（白／黒）は背景に応じて反転する
+ * - 色 7（ほぼ白／ほぼ黒）は**背景と衝突する側だけ**入れ替える
  * - 有彩色は暗背景では `darkBoost` の分だけ持ち上げる
+ *
+ * ## 衝突しない側は入れ替えない（issue #55）
+ *
+ * デスクトップ版 `Renderer.cs` の `EffColor` は
+ *
+ * ```csharp
+ * if (IsLightBg && light) return 0xFF000000u;    // 白 → 明背景では黒
+ * if (!IsLightBg && !light) return 0xFFFFFFFFu;  // 黒 → 暗背景では白
+ * return col;                                    // それ以外は図面の色のまま
+ * ```
+ *
+ * と、**背景と衝突する側だけ**を入れ替える。以前ここは無彩色を明背景で一律反転して
+ * いたため、`.tc2` が持つ真っ黒（`#000000`）が白になり、白背景でペイントが消えた。
  */
 export function effectiveColor(e: Entity, ctx: ColorContext): string {
   const base = e.color ?? ctx.layers.get(e.layer)?.color ?? VB_BLACK;
@@ -127,10 +157,12 @@ export function effectiveColor(e: Entity, ctx: ColorContext): string {
   if (!rgb) return base;
 
   const light = isLightBackground(ctx.background);
-  const achromatic = rgb.r === rgb.g && rgb.g === rgb.b;
+  const mono = monoKind(rgb);
 
-  if (achromatic) {
-    return light ? formatColor({ r: 255 - rgb.r, g: 255 - rgb.g, b: 255 - rgb.b }) : base;
+  if (mono !== null) {
+    if (light && mono === 'light') return MONO_ON_LIGHT_BG; // 白 → 明背景では黒
+    if (!light && mono === 'dark') return VB_BLACK; // 黒 → 暗背景では白
+    return base; // 黒＋明背景 / 白＋暗背景 は図面の色のまま
   }
   if (!light && ctx.darkBoost > 0) {
     const k = Math.min(1, Math.max(0, ctx.darkBoost));
